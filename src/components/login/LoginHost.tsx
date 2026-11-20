@@ -14,6 +14,7 @@ import { createLoginHostState } from './loginHostState';
 import { closeLoginWindow, loginHostMounted, setLoginLanding, useLoginWindowStore } from './loginWindowStore';
 import { orderRows } from './platformRows';
 import { syncAccountData } from './syncAccountData';
+import { useWebLoginAction } from './useWebLoginAction';
 import LoginScreen from './window/LoginScreen';
 
 // src/components/login/LoginHost.tsx
@@ -42,6 +43,8 @@ const LoginHost: React.FC<LoginHostProps> = ({ account }) => {
     const syncingProviderId = useLibraryAccountSelector(account, selectAccountSyncProviderId);
     const setup = useLibraryAccountSelector(account, selectSetup);
     const reducedMotion = useKitReducedMotion();
+    // 网页登录（原生登录页）：没有原生桥的环境里 available 是 false，窗口里就不出现这一颗按钮。
+    const webLogin = useWebLoginAction(account, t);
 
     // host 每次去问都拿到这一次渲染的东西。
     const live = useRef({ account, providers, reducedMotion });
@@ -148,6 +151,7 @@ const LoginHost: React.FC<LoginHostProps> = ({ account }) => {
             onOpenSetup={host.openSetupChosen}
             onSetupAction={(stepId, actionId, value) => account.runSetupAction(stepId, actionId, value).then(result => result.status === 'done')}
             onFinishSetup={() => void account.finishSetup()}
+            webLogin={webLogin}
             buildReport={async () => {
                 const result = await account.buildLoginDiagnosticReport();
                 return result.status === 'ok' ? result.report : '';

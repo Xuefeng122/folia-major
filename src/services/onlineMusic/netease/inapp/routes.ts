@@ -156,14 +156,29 @@ const routes: Record<string, Route> = {
 
     '/song/detail': (query) => songDetailOf([...numberList(query, 'ids'), ...numberList(query, 'id')]),
 
-    '/lyric/new': async (query) => postEapi('/api/song/lyric/v1', {
-        id: integer(query, 'id'),
-        lv: 0,
-        kv: 0,
-        tv: 0,
-        rv: 0,
-        cp: false,
-    }),
+    // 歌词：eapi 用 lv=0（不是 -1 —— 不带 cp 的 lv=-1 会被回 code -1），拿不到词时再用 weapi 的
+    // lv=-1 问一遍。两路都是这台机器上实测过的：eapi lv=0 回 lrc 1518 字符，weapi lv=-1 回 1471。
+    '/lyric/new': async (query) => {
+        const id = integer(query, 'id');
+        const answer: any = await postEapi('/api/song/lyric/v1', {
+            id,
+            lv: 0,
+            kv: 0,
+            tv: 0,
+            rv: 0,
+            cp: false,
+        });
+        const hasWords = Boolean(answer?.lrc?.lyric || answer?.yrc?.lyric || answer?.tlyric?.lyric);
+        if (hasWords || answer?.nolyric || answer?.uncollected || !(id > 0)) return answer;
+        try {
+            const fallback: any = await postWeapi('/api/song/lyric', { id, lv: -1, kv: -1, tv: -1 });
+            const fallbackHasWords = Boolean(fallback?.lrc?.lyric || fallback?.yric?.lyric || fallback?.tlyric?.lyric);
+            if (fallbackHasWords) return fallback;
+        } catch (error) {
+            console.warn('[Netease] Lyric fallback through weapi failed:', id, error);
+        }
+        return answer;
+    },
 
     // The route takes one id but NetEase answers a list.
     '/song/chorus': async (query) => postEapi('/api/song/chorus', {

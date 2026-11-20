@@ -22,6 +22,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@capacitor/core": [
+        "./src/mods/web/capacitorCoreStub.ts"
       ]
     },
     "allowImportingTsExtensions": true,

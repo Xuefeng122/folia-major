@@ -81,6 +81,57 @@ const withTimeout = <T>(work: Promise<T>, ms: number, message: string): Promise<
     });
 });
 
+/**
+ * A source that keeps a version manifest online stops itself when the manifest names a newer
+ * version than its own: it sends `updateAlert` and never sends `inited`, so the source is loaded but
+ * speaks for nothing and every play is left without an address. The gate below answers that one
+ * request itself — with the version the script was installed at, i.e. "you are up to date" — so a
+ * script whose release only moved on still runs. What the listener then sees is the row's
+ * 「音源已过期，点此更新」 notice: the source works, and a newer script can be taken from the page.
+ */
+export interface LxVersionGateReport {
+    id: string;
+    /** The manifest address the script asked about (host + path, without query). */
+    url: string;
+    /** The version the script was installed at; empty where its header named none. */
+    localVersion: string;
+    at: number;
+}
+
+const versionGateReports = new Map<string, LxVersionGateReport>();
+
+/** What the gate answered for one source, for the settings row; null where it never had to answer. */
+export const lxVersionGateReport = (id: string): LxVersionGateReport | null => versionGateReports.get(id) ?? null;
+
+export const allLxVersionGateReports = (): LxVersionGateReport[] => Array.from(versionGateReports.values());
+
+export const clearLxVersionGateReports = (): void => {
+    versionGateReports.clear();
+};
+
+/** The version the gate claims when the script's own header names none: high enough to never alert. */
+const UNKNOWN_LOCAL_VERSION = '9999.0.0';
+
+/**
+ * The address a gate may answer on, in the one shape two spellings of it agree on (host + path, no
+ * query, no trailing slash). Only a `.json` address qualifies: a script whose update address is its
+ * own `.js` compares the text it fetches from there, and answering JSON on that address would break
+ * exactly the script the gate is meant to keep running.
+ */
+const gateKeyOf = (address: string | undefined): string | null => {
+    if (!address) return null;
+    let parsed: URL;
+    try {
+        parsed = new URL(address.trim());
+    } catch {
+        return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (!/\.json$/iu.test(parsed.pathname)) return null;
+    const path = parsed.pathname.replace(/\/+$/u, '');
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${path}`;
+};
+
 /** The bytes helpers a script may use to read a response it was given as binary. */
 const createBufferUtils = () => {
     const toBytes = (value: unknown): Uint8Array => {
@@ -258,6 +309,15 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
     let lastSent: unknown = null;
     let disposed = false;
 
+    // The addresses this script's own version check asks about: the manifest it declares in its
+    // header, and whatever address the listener gave the source. Nothing else is ever answered here.
+    const gateKeys = new Set<string>();
+    [meta.updateUrl, readLxScriptHeader(code).updateUrl].forEach(address => {
+        const key = gateKeyOf(address);
+        if (key) gateKeys.add(key);
+    });
+    const localVersion = meta.version || readLxScriptHeader(code).version || '';
+
     const lx = {
         version: LX_VERSION,
         env: 'desktop',
@@ -289,7 +349,41 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
             options?: LxRequestOptions,
             callback?: (error: Error | null, answer?: LxHttpAnswer) => void,
         ) {
-            const answer = requestThrough(String(url), options);
+            const address = String(url);
+            const gateKey = gateKeyOf(address);
+            // Only a plain read of the script's own version manifest is answered here — a POST, a
+            // request carrying a body, or any other host keeps the script's own behaviour.
+            const readOnly = (options?.method ?? 'get').toUpperCase() === 'GET'
+                && options?.body === undefined
+                && options?.form === undefined;
+            if (gateKey && gateKeys.has(gateKey) && readOnly) {
+                const reported = localVersion || UNKNOWN_LOCAL_VERSION;
+                versionGateReports.set(meta.id, {
+                    id: meta.id,
+                    url: gateKey,
+                    localVersion,
+                    at: Date.now(),
+                });
+                console.log(
+                    `[LxSource] ${meta.name} 的版本检查已在沙箱内放行：${gateKey} 回答“已是最新”`
+                    + `（本机版本 ${localVersion || '未知'}），脚本继续初始化`,
+                );
+                const answer: LxHttpAnswer = {
+                    statusCode: 200,
+                    headers: { 'content-type': 'application/json' },
+                    body: {
+                        version: reported,
+                        description: '',
+                        updateUrl: '',
+                    },
+                };
+                if (typeof callback === 'function') {
+                    Promise.resolve(answer).then(result => callback(null, result));
+                    return;
+                }
+                return Promise.resolve(answer);
+            }
+            const answer = requestThrough(address, options);
             if (typeof callback === 'function') {
                 answer.then(result => callback(null, result), error => callback(error as Error));
                 return;
@@ -370,7 +464,9 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
 };
 
 /** Reads the header comment of an imported script: its name, version and the like. */
-export const readLxScriptHeader = (code: string): Pick<LxSourceMeta, 'name' | 'description' | 'version' | 'author' | 'homepage'> => {
+export const readLxScriptHeader = (
+    code: string,
+): Pick<LxSourceMeta, 'name' | 'description' | 'version' | 'author' | 'homepage' | 'updateUrl'> => {
     const head = code.slice(0, 4000);
     const read = (field: string): string | undefined => {
         const match = new RegExp(`@${field}\\s+([^\\n\\r*]+)`, 'i').exec(head);
@@ -383,5 +479,8 @@ export const readLxScriptHeader = (code: string): Pick<LxSourceMeta, 'name' | 'd
         version: read('version'),
         author: read('author'),
         homepage: read('homepage'),
+        // A source usually declares the manifest it checks itself against; that is the address the
+        // gate listens on, and the one its row checks for a newer script.
+        updateUrl: read('update_url') ?? read('updateUrl'),
     };
 };

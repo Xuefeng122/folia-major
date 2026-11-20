@@ -70,6 +70,7 @@ import {
     subscribeOnlineMusicProviderRegistry,
 } from './providerRegistry';
 import { saveProviderAccountSnapshot } from './providerAccountCache';
+import { searchNeteaseLyricsByNameArtist } from './netease/neteaseProvider';
 import {
     checkRecommendationPreferenceChanges,
     normalizeRecommendationPreferences,
@@ -1288,10 +1289,45 @@ export const omni = {
     // extension layer rewrites them: a reader that is itself such a layer would otherwise call itself.
     async getLyrics(song: SongResult, context?: { userId?: MediaId | null; extensionHooks?: boolean }): Promise<OmniLyricsResult> {
         const provider = providerForSong(song);
-        if (!provider.lyrics) return unsupported(provider.id, 'lyrics');
         const { extensionHooks = true, ...providerContext } = context ?? {};
+        // 只提供播放地址的平台（洛雪音源）根本没有取词这一层：这不是「不支持」，它在别处是有词的。
+        // 直接拿歌名 + 歌手去网易云借一份；借不到才按不支持返回。
+        if (!provider.lyrics) {
+            try {
+                const borrowed = await searchNeteaseLyricsByNameArtist(song);
+                if (borrowed) {
+                    console.log(`[Omni] Lyrics borrowed from NetEase for ${provider.id} song ${String(song.id)}`);
+                    const borrowedResolved = (await resolveProviderLyricsChorus(borrowed, {
+                        providerId: provider.id,
+                        songId: song.id,
+                    })).result;
+                    return extensionHooks ? applyOmniLyricsHook(song, borrowedResolved) : borrowedResolved;
+                }
+            } catch (error) {
+                console.warn('[Omni] Lyric borrow for lyrics-less provider failed:', error);
+            }
+            return unsupported(provider.id, 'lyrics');
+        }
         const providerUserId = useOnlineProviderAccountStore.getState().accounts[provider.id]?.user?.id ?? providerContext.userId;
-        const providerResult = await provider.lyrics.getLyrics(song, { ...providerContext, userId: providerUserId });
+        let providerResult = await provider.lyrics.getLyrics(song, { ...providerContext, userId: providerUserId });
+        // 跨平台兜底：这个平台给的 id 取不到词（洛雪音源放出来的歌，id 是音源自己的编号，别的平台
+        // 根本没有它），或者条目本身缺词时，用「歌名 + 歌手」去网易云搜一份。搜不到就用原来的结果。
+        const hasWords = Boolean(
+            providerResult.mainText?.trim()
+            || providerResult.wordByWordText?.trim()
+            || providerResult.isPureMusic,
+        );
+        if (!hasWords && provider.id !== 'netease') {
+            try {
+                const borrowed = await searchNeteaseLyricsByNameArtist(song);
+                if (borrowed) {
+                    console.log(`[Omni] Lyrics borrowed from NetEase for ${provider.id} song ${String(song.id)}`);
+                    providerResult = borrowed;
+                }
+            } catch (error) {
+                console.warn('[Omni] Cross-provider lyric fallback failed:', error);
+            }
+        }
         const resolved = (await resolveProviderLyricsChorus(providerResult, {
             providerId: provider.id,
             songId: song.id,

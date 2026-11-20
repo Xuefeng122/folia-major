@@ -189,6 +189,13 @@ const describeQrResponse = (response: any): string => (
 
 const yesNo = (value: boolean): string => (value ? 'yes' : 'no');
 
+// 把扫码链接画成二维码图片（data URL）。qrcode 按需加载：只有扫码登录真的需要自己画图时才会拉这段
+// 代码，首屏和桌面那条走后端出图的路都不碰它。
+const drawQrDataUrl = async (text: string): Promise<string> => {
+    const { toDataURL } = await import('qrcode');
+    return toDataURL(text, { margin: 1, width: 480, errorCorrectionLevel: 'M', color: { dark: '#000000ff', light: '#ffffffff' } });
+};
+
 // 最近一次读登录状态的结论。扫码确认之后账号没读出来时，诊断报告靠它说是哪一个接口没给登录状态。
 let lastLoginStatusCheck: LoginDiagnosticLine | null = null;
 const noteLoginStatusCheck = (summary: LoginDiagnosticLine): void => {
@@ -213,7 +220,10 @@ const extractCloudLyricText = (response: any): string => (
 const neteaseChorusRangesCache = new Map<string, Promise<Array<{ startTime: number; endTime: number }>>>();
 
 const getNeteaseChorusRanges = async (songId: MediaId): Promise<Array<{ startTime: number; endTime: number }>> => {
-    const parsedId = toNeteaseId(songId);
+    // 音源给的编号不是网易云的 id 时没有副歌时间可用，回空的比抛错好：歌词本身还是能显示的。
+    const numericId = Number(songId);
+    if (!Number.isSafeInteger(numericId) || numericId <= 0) return [];
+    const parsedId = numericId;
     const cacheKey = String(parsedId);
     const cached = neteaseChorusRangesCache.get(cacheKey);
     if (cached) return cached;
@@ -336,12 +346,209 @@ const getNeteaseAlternateArtistName = async (song: SongResult): Promise<string |
     return other === song.artists.map(artist => artist.name).join(', ') ? null : other;
 };
 
+// 一首歌自己那一份歌词是空的：翻唱、纯音乐的标记、曲库里条目本身缺词都会这样。这时把「歌名 + 歌手」
+// 再搜一遍，从命中的条目里挑同名、同歌手、时长相近的，借它的歌词。挑不到就仍然空手回去，界面按
+// 「没有歌词」显示，不报成加载失败。
+//
+// 还有一种更常见的情形：歌是洛雪音源放出来的，它的 id 是音源自己的编号（如 3438487097），在网易云
+// 那边根本没有这个 id。这时也走同一条路 —— 用歌名 + 歌手搜出网易云的条目再取词，取到之后把
+// 「歌名 + 歌手 → 网易云 id」记下来，同一首歌下次播放直接取词，不用再搜。
+const LYRICS_FALLBACK_LIMIT = 10;
+const LYRICS_FALLBACK_TRIES = 3;
+const LYRICS_DURATION_TOLERANCE_MS = 6000;
+
+const LYRICS_ID_MAP_KEY = 'folia_lyric_netease_id_map';
+const LYRICS_ID_MAP_LIMIT = 800;
+
+type LyricIdMap = Record<string, number>;
+
+const readLyricIdMap = (): LyricIdMap => {
+    if (typeof window === 'undefined') return {};
+    try {
+        const raw = window.localStorage.getItem(LYRICS_ID_MAP_KEY);
+        if (!raw) return {};
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const kept: LyricIdMap = {};
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+            const id = Number(value);
+            if (key && Number.isFinite(id) && id > 0) kept[key] = id;
+        }
+        return kept;
+    } catch {
+        return {};
+    }
+};
+
+const writeLyricIdMap = (map: LyricIdMap): void => {
+    if (typeof window === 'undefined') return;
+    try {
+        const keys = Object.keys(map);
+        const trimmed = keys.length > LYRICS_ID_MAP_LIMIT ? keys.slice(keys.length - LYRICS_ID_MAP_LIMIT) : keys;
+        const kept: LyricIdMap = {};
+        for (const key of trimmed) kept[key] = map[key];
+        window.localStorage.setItem(LYRICS_ID_MAP_KEY, JSON.stringify(kept));
+    } catch (error) {
+        console.warn('[NeteaseProvider] Failed to store the lyric id map', error);
+    }
+};
+
+// 比较用的歌名：去掉空白和常见标点，剩下的按小写比。括号里的内容（原唱、Live、版本说明）一并去掉，
+// 否则带版本说明的条目永远比不上。
+const lyricNameKey = (value: string): string => String(value ?? '')
+    .replace(/[（(【\[].*?[）)】\]]/g, '')
+    .replace(/[\s\-_·.,'"!?、，。！？]/g, '')
+    .toLowerCase();
+
+// 把搜索结果按「像不像同一首歌」排个序，只要够像的那几个 id。
+const rankLyricFallbackCandidates = (songs: any[], song: SongResult): number[] => {
+    const wantedName = lyricNameKey(song.name);
+    if (!wantedName) return [];
+    const wantedArtists = (song.artists ?? []).map(artist => lyricNameKey(artist.name)).filter(Boolean);
+    const scored: Array<{ id: number; score: number }> = [];
+    for (const raw of Array.isArray(songs) ? songs : []) {
+        const id = Number(raw?.id);
+        if (!Number.isFinite(id) || id <= 0) continue;
+        const name = lyricNameKey(raw?.name);
+        let score = 0;
+        if (name === wantedName) score += 3;
+        else if (name && (name.includes(wantedName) || wantedName.includes(name))) score += 1;
+        else continue;
+        const artists = (Array.isArray(raw?.ar) ? raw.ar : []).map((artist: any) => lyricNameKey(artist?.name)).filter(Boolean);
+        if (wantedArtists.length && artists.some((name: string) => wantedArtists.includes(name))) score += 2;
+        const durationMs = Number(raw?.dt ?? 0);
+        if (song.durationMs && durationMs) {
+            const gap = Math.abs(durationMs - song.durationMs);
+            if (gap <= 2000) score += 2;
+            else if (gap <= LYRICS_DURATION_TOLERANCE_MS) score += 1;
+        }
+        scored.push({ id, score });
+    }
+    return scored
+        .filter(entry => entry.score >= 3)
+        .sort((left, right) => right.score - left.score)
+        .map(entry => entry.id);
+};
+
+/** 「歌名|歌手」—— 记 id、查 id 都用它当键。 */
+const lyricLookupKey = (song: SongResult): string => {
+    const name = lyricNameKey(song.name);
+    if (!name) return '';
+    const artist = lyricNameKey(song.artists?.[0]?.name ?? '');
+    return artist ? `${name}|${artist}` : name;
+};
+
+/** 这首歌在网易云那边的 id；洛雪音源给的编号不是数、或不是正整数时，答案是「没有」。 */
+const neteaseIdOfSong = (song: SongResult): number | null => {
+    const numericId = Number(song.id);
+    return Number.isSafeInteger(numericId) && numericId > 0 ? numericId : null;
+};
+
+const readRememberedLyricId = (song: SongResult): number | null => {
+    const key = lyricLookupKey(song);
+    if (!key) return null;
+    const id = readLyricIdMap()[key];
+    return typeof id === 'number' && id > 0 ? id : null;
+};
+
+const rememberLyricId = (song: SongResult, id: number): void => {
+    const key = lyricLookupKey(song);
+    if (!key || !(id > 0)) return;
+    const map = readLyricIdMap();
+    if (map[key] === id) return;
+    map[key] = id;
+    writeLyricIdMap(map);
+};
+
+// 先按「歌名 歌手」搜，搜不到再看只搜歌名的一遍；同一个 id 只留一次，且不含这首歌自己。
+// 上一次已经搜出过结果的歌，先试记住的那个 id。
+const searchLyricFallbackIds = async (song: SongResult): Promise<number[]> => {
+    const ownId = neteaseIdOfSong(song);
+    const remembered = readRememberedLyricId(song);
+    const artistName = song.artists?.[0]?.name?.trim() ?? '';
+    const queries = Array.from(new Set([
+        artistName ? `${song.name} ${artistName}` : song.name,
+        song.name,
+    ].map(keywords => keywords.trim()).filter(Boolean)));
+    const ids: number[] = [];
+    if (remembered && remembered !== ownId) ids.push(remembered);
+    for (const keywords of queries) {
+        try {
+            const response = await neteaseApi.cloudSearch(keywords, LYRICS_FALLBACK_LIMIT, 0, 1);
+            const songs = response?.result?.songs;
+            for (const id of rankLyricFallbackCandidates(songs, song)) {
+                if (id === ownId || ids.includes(id)) continue;
+                ids.push(id);
+            }
+        } catch (error) {
+            console.warn('[NeteaseProvider] Lyric fallback search failed:', keywords, error);
+        }
+        if (ids.length >= LYRICS_FALLBACK_TRIES) break;
+    }
+    return ids.slice(0, LYRICS_FALLBACK_TRIES);
+};
+
+const readNeteaseLyrics = async (id: number) => {
+    const response = await neteaseApi.getLyric(id);
+    return processNeteaseLyrics(
+        typeof neteaseApi.getProcessedLyricPayload === 'function'
+            ? neteaseApi.getProcessedLyricPayload(response)
+            : response,
+    );
+};
+
+/** 空手回去的形状：界面据此显示「没有歌词」，不是「加载失败」。 */
+const NO_LYRICS: ProviderLyricsResult = {
+    lyrics: null,
+    mainText: null,
+    wordByWordText: null,
+    translationText: null,
+    romanizationText: null,
+    isPureMusic: false,
+    chorusRanges: [],
+};
+
+const lyricsResultOf = async (
+    processed: Awaited<ReturnType<typeof readNeteaseLyrics>>,
+    chorusSongId: MediaId | null,
+): Promise<ProviderLyricsResult> => ({
+    lyrics: processed.lyrics,
+    mainText: processed.mainLrc,
+    wordByWordText: processed.yrcLrc,
+    translationText: processed.transLrc,
+    romanizationText: processed.romanizationLrc,
+    isPureMusic: processed.isPureMusic,
+    chorusRanges: chorusSongId == null ? [] : await getNeteaseChorusRanges(chorusSongId),
+});
+
+/**
+ * 用「歌名 + 歌手」去网易云搜一份歌词。给两类调用方用：这首歌自己在网易云没有 id（洛雪音源放出来的
+ * 歌），或者别的平台给的 id 取不到词（跨平台兜底）。搜不到就回 null，不抛错。
+ */
+export const searchNeteaseLyricsByNameArtist = async (song: SongResult): Promise<ProviderLyricsResult | null> => {
+    for (const candidateId of await searchLyricFallbackIds(song)) {
+        try {
+            const borrowed = await readNeteaseLyrics(candidateId);
+            if (borrowed.mainLrc?.trim() || borrowed.isPureMusic) {
+                rememberLyricId(song, candidateId);
+                console.log('[NeteaseProvider] Lyrics matched by name and artist:', song.name, '->', candidateId);
+                return await lyricsResultOf(borrowed, candidateId);
+            }
+        } catch (error) {
+            console.warn('[NeteaseProvider] Lyric fallback read failed:', candidateId, error);
+        }
+    }
+    console.log('[NeteaseProvider] No NetEase lyric matched:', song.name, song.artists?.map(artist => artist.name).join(', '));
+    return null;
+};
+
 const getLyrics = async (
     song: SongResult,
     context?: { userId?: MediaId | null },
 ): Promise<ProviderLyricsResult> => {
-    if (song.sourceRef?.kind === 'online' && song.sourceRef.variant === 'cloud' && context?.userId != null) {
-        const response = await neteaseApi.getCloudLyric(toNeteaseId(context.userId), toNeteaseId(song.id));
+    const ownId = neteaseIdOfSong(song);
+    if (song.sourceRef?.kind === 'online' && song.sourceRef.variant === 'cloud' && context?.userId != null && ownId != null) {
+        const response = await neteaseApi.getCloudLyric(toNeteaseId(context.userId), ownId);
         const mainText = extractCloudLyricText(response);
         const processed = await processNeteaseLyrics({ type: 'netease', lrc: { lyric: mainText } });
         return {
@@ -351,25 +558,35 @@ const getLyrics = async (
             translationText: null,
             romanizationText: null,
             isPureMusic: processed.isPureMusic,
-            chorusRanges: await getNeteaseChorusRanges(song.id),
+            chorusRanges: await getNeteaseChorusRanges(ownId),
         };
     }
 
-    const response = await neteaseApi.getLyric(toNeteaseId(song.id));
-    const processed = await processNeteaseLyrics(
-        typeof neteaseApi.getProcessedLyricPayload === 'function'
-            ? neteaseApi.getProcessedLyricPayload(response)
-            : response,
-    );
-    return {
-        lyrics: processed.lyrics,
-        mainText: processed.mainLrc,
-        wordByWordText: processed.yrcLrc,
-        translationText: processed.transLrc,
-        romanizationText: processed.romanizationLrc,
-        isPureMusic: processed.isPureMusic,
-        chorusRanges: await getNeteaseChorusRanges(song.id),
-    };
+    // 没有网易云 id（洛雪音源的歌）：不当作失败，直接按歌名 + 歌手去找。
+    if (ownId == null) {
+        console.log('[NeteaseProvider] Song has no NetEase id, matching by name:', song.name, String(song.id));
+    }
+    let processed: Awaited<ReturnType<typeof readNeteaseLyrics>> | null = null;
+    let readError: unknown = null;
+    if (ownId != null) {
+        try {
+            processed = await readNeteaseLyrics(ownId);
+        } catch (error) {
+            // 读词失败（网络、接口）先记下来。按歌名再找一遍还能找到就不算失败；也找不到时才把原因
+            // 抛上去，让界面按「加载失败」显示，而不是悄悄变成「没有歌词」。
+            readError = error;
+            console.warn('[NeteaseProvider] Lyric read failed for', ownId, error);
+        }
+    }
+    if (!processed?.mainLrc?.trim() && !processed?.isPureMusic) {
+        const borrowed = await searchNeteaseLyricsByNameArtist(song);
+        if (borrowed) return borrowed;
+    }
+    if (!processed) {
+        if (readError) throw readError;
+        return NO_LYRICS;
+    }
+    return await lyricsResultOf(processed, ownId);
 };
 
 export const neteaseProvider: OnlineMusicProvider = {
@@ -605,7 +822,23 @@ export const neteaseProvider: OnlineMusicProvider = {
             const response = await neteaseApi.createQr(key);
             const image = String(response?.data?.qrimg || '');
             if (image) return image;
-            throw new OnlineProviderError('invalid-response', `NetEase QR image request failed: ${describeQrResponse(response)}`, 'netease', response);
+            // 二维码那张图由上游后端合成，直连通道里没人合成它，回答里只有扫码链接（qrurl）。链接本身
+            // 就是码里的内容，所以前端自己画一张：画布上出图、转成 data URL，登录窗口照旧当图片用。
+            const url = String(response?.data?.qrurl || response?.data?.url || '');
+            if (url) {
+                try {
+                    const drawn = await drawQrDataUrl(url);
+                    if (drawn) return drawn;
+                } catch (error) {
+                    console.warn('[NeteaseProvider] Drawing the QR image failed:', error);
+                }
+            }
+            throw new OnlineProviderError(
+                'invalid-response',
+                `NetEase QR image request failed: ${describeQrResponse(response)}${url ? '' : ' (no qrurl)'}`,
+                'netease',
+                response,
+            );
         },
         async checkLogin(key) {
             let response: any;

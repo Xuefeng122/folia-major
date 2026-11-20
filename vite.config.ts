@@ -338,6 +338,9 @@ export default async function viteConfig(_config: ConfigEnv): Promise<UserConfig
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
+        // @capacitor/core 只在 iOS 壳的构建里装得上（见 .github/workflows/ios-ipa.yml）。别的构建
+        // 用它只会是为了「有没有原生桥」这一个判断，指向一个空壳就够，免得为它多一份依赖。
+        ...(isCapacitorBuild ? {} : { '@capacitor/core': path.resolve(__dirname, './src/mods/web/capacitorCoreStub.ts') }),
       }
     }
   };

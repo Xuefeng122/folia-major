@@ -22,6 +22,7 @@ import FormLogin from './FormLogin';
 import LoginWindow from './LoginWindow';
 import PlatformColumn from './PlatformColumn';
 import SetupChecklist from './SetupChecklist';
+import type { WebLoginAction } from '../useWebLoginAction';
 
 // src/components/login/window/LoginScreen.tsx
 // 登录窗口此刻画什么：从「选中了哪一行、登录走到哪一步、失败是哪一种情况」定出那一块画、标题、
@@ -74,6 +75,8 @@ export type LoginScreenProps = {
     onSetupAction?: (stepId: string, actionId: string, value?: string) => Promise<boolean>;
     /** 收起清单（登录之后的那一份：报这一次登录的完成）。 */
     onFinishSetup?: () => void;
+    /** 网页登录（iOS 壳里的原生登录页）：没有原生桥时整项不画。 */
+    webLogin?: WebLoginAction | null;
 };
 
 const nothing = () => { };
@@ -96,6 +99,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     isOpen, onClose, rows, activeProviderId, chosen, login, onChoose, onStart, onSubmitForm, onSelectMethod, onReopenBrowser, onRestartService, onSwitch, onSignOut,
     onSync, syncingProviderId = null, buildReport, origin, done = false, onDoneLeave = nothing, onDoneEnd = nothing,
     setup = null, canOpenSetup = false, onOpenSetup = nothing, onSetupAction = nothingDone, onFinishSetup = nothing,
+    webLogin = null,
 }) => {
     const { t } = useTranslation();
     const still = useKitReducedMotion();
@@ -114,6 +118,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     const retryLabel = t(inBrowser ? 'home.loginBrowserRetry' : 'home.retryQr');
     const switchAction: MessageAction[] = providerId && providerId !== activeProviderId
         ? [{ label: t('home.switchToProvider', { provider: label }), primary: true, onClick: onSwitch }]
+        : [];
+    // 网页登录：iOS 壳里才有原生桥；选中的这一家有官方网页登录页才给这一颗。
+    const webLoginActions: MessageAction[] = webLogin?.available && providerId && webLogin.supported(providerId)
+        ? [{
+            label: t(webLogin.busy ? 'login.webLoginRunning' : 'login.webLogin'),
+            busy: webLogin.busy,
+            disabled: webLogin.busy,
+            onClick: () => webLogin.run(providerId),
+        }]
         : [];
 
     let headline: string;
@@ -199,6 +212,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         }
         if (scene === 'browser-ready') actions = [{ label: t('login.openBrowser'), primary: true, onClick: onStart }];
         if (scene === 'browser' && login?.canReopenLoginPage) actions = [{ label: t('home.loginBrowserOpen'), onClick: onReopenBrowser }];
+    }
+
+    // 网页登录是「另一条路」，放在次要位置：等选登录方式、等点打开浏览器、以及登录失败之后。
+    // 它的说明只在没有别的说明时补上，不抢平台自己的话。
+    if (webLoginActions.length > 0 && (scene === 'methods' || scene === 'browser-ready' || scene === 'failed')) {
+        actions = [...actions.filter(action => action.primary), ...webLoginActions, ...actions.filter(action => !action.primary)];
+        if (!note) note = webLogin?.note(providerId ?? null) ?? undefined;
     }
 
     // 登录成功的动画：扫码之后那一块画由它画，读到账号之后它铺满窗口，再让窗口走（done/）。动效关着就没有；

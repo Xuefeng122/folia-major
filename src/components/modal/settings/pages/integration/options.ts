@@ -38,4 +38,6 @@ export const O = {
     lxSourcePaste: option(LX_SOURCE, 'lxSourcePaste', 'options.lxSourcePaste'),
     lxSourceList: option(LX_SOURCE, 'lxSourceList', 'options.lxSourceList'),
     lxSourceReload: option(LX_SOURCE, 'lxSourceReload', 'options.lxSourceReload'),
+    lxSourceUpdate: option(LX_SOURCE, 'lxSourceUpdate', 'options.lxSourceUpdate'),
+    lxSourceManifest: option(LX_SOURCE, 'lxSourceManifest', 'options.lxSourceManifest'),
 };

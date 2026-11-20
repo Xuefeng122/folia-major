@@ -6,7 +6,7 @@
 import type { AudioQualityPreference } from '../../../types/onlineMusic';
 import type { SongResult } from '../../../types';
 import { getOnlineProviderIdForSong } from '../../../utils/appPlaybackGuards';
-import { createLxSourceHost, type LxSourceHost } from './lxSourceSandbox';
+import { clearLxVersionGateReports, createLxSourceHost, lxVersionGateReport, type LxSourceHost } from './lxSourceSandbox';
 import { enabledLxSources, useLxSourceStore } from './lxSourceStore';
 import type { LxPlatformId, LxQuality, LxSourceMeta } from './lxSourceTypes';
 
@@ -96,11 +96,25 @@ const readHost = async (meta: LxSourceMeta): Promise<LxSourceHost | null> => {
 /** Why a source could not be loaded, for the settings page; null where it loaded fine. */
 export const lxSourceLoadError = (id: string): string | null => brokenHosts.get(id) ?? null;
 
+/**
+ * What the version gate answered for a source, for the settings row: a source that had to be let
+ * past its own "a newer release exists" check works, but the listener should still see that a newer
+ * script is out there. Null where no check was answered.
+ */
+export const lxSourceGateNotice = (id: string): string | null => {
+    const report = lxVersionGateReport(id);
+    if (!report) return null;
+    return report.localVersion || 'unknown';
+};
+
 /** Forgets the compiled scripts, so the next play compiles them again (after an import or a removal). */
 export const resetLxSourceHosts = (): void => {
     hosts.forEach(host => host.dispose());
     hosts.clear();
     brokenHosts.clear();
+    // A replaced script is judged afresh: whether its own check still needs letting through is
+    // decided by the script that runs next, not by the one that ran before.
+    clearLxVersionGateReports();
 };
 
 /**

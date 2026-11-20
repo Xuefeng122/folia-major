@@ -27,6 +27,25 @@ const detectPlatforms = (code: string): LxPlatformId[] => {
     return found.length ? found : [...ALL_PLATFORMS];
 };
 
+/**
+ * A script imported from a release page keeps the address it came from, so the settings page can
+ * ask for a newer copy without the listener pasting the address again. A GitHub blob link is turned
+ * into the raw address its text is served at; anything else is kept as it was written.
+ */
+const updateAddressFrom = (homepage?: string): string | undefined => {
+    const trimmed = homepage?.trim();
+    if (!trimmed || !/^https?:\/\//iu.test(trimmed)) return undefined;
+    const github = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/u.exec(trimmed);
+    if (github) {
+        const [, owner, repo, branch, path] = github;
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+    }
+    const gist = /^https?:\/\/gist\.github\.com\/([^/]+)\/([^/]+)$/u.exec(trimmed);
+    if (gist) return `https://gist.githubusercontent.com/${gist[1]}/${gist[2]}/raw`;
+    return /\.jsx?(\?|$)/iu.test(trimmed) ? trimmed : undefined;
+};
+
+
 interface LxSourceState {
     sources: LxSourceMeta[];
     /** A script being imported, so the page can show that something is happening. */
@@ -36,6 +55,10 @@ interface LxSourceState {
     setEnabled: (id: string, enabled: boolean) => void;
     move: (id: string, direction: -1 | 1) => void;
     noteResult: (id: string, outcome: { ok: boolean; error?: string }) => void;
+    /** The address a newer copy of this source is fetched from; empty clears the guess. */
+    setUpdateUrl: (id: string, address: string) => void;
+    /** Takes on a script that came from somewhere else (an online update, a rollback). */
+    adoptScript: (id: string, patch: Partial<LxSourceMeta>) => void;
     /** The script of one source, read from the store on first use. */
     readScript: (id: string) => Promise<string | null>;
 }
@@ -62,6 +85,7 @@ export const useLxSourceStore = create<LxSourceState>((set, get) => ({
                 version: header.version,
                 author: header.author,
                 homepage: header.homepage,
+                updateUrl: updateAddressFrom(header.homepage),
                 platforms: detectPlatforms(trimmed),
                 enabled: true,
                 order: get().sources.length,
@@ -117,6 +141,33 @@ export const useLxSourceStore = create<LxSourceState>((set, get) => ({
     },
 
     readScript: id => readLxSourceScript(id),
+
+    setUpdateUrl(id, address) {
+        const trimmed = address.trim();
+        const sources = get().sources.map(source => (
+            source.id === id ? { ...source, updateUrl: trimmed || undefined } : source
+        ));
+        persist(sources);
+        set({ sources });
+    },
+
+    adoptScript(id, patch) {
+        const sources = get().sources.map(source => (
+            source.id === id
+                ? {
+                    ...source,
+                    ...patch,
+                    updatedAt: patch.updatedAt ?? Date.now(),
+                    // What the last play learned about the old script says nothing about the new one.
+                    hits: 0,
+                    misses: 0,
+                    lastError: undefined,
+                }
+                : source
+        ));
+        persist(sources);
+        set({ sources });
+    },
 }));
 
 /** The sources a play may be switched through, in the order the listener put them. */

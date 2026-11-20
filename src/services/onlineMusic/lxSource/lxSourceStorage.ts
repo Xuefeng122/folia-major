@@ -57,9 +57,38 @@ export const writeLxSourceScript = async (id: string, code: string): Promise<voi
     await saveToCache(scriptKey(id), { code });
 };
 
+// The copy an online update replaced: kept beside the script so a bad update can be undone after
+// the fact instead of costing the listener a source. One copy per source, the newest one.
+const backupKey = (id: string) => `lx-source-backup:${id}`;
+
+export interface LxSourceBackup {
+    code: string;
+    version?: string;
+    at: number;
+}
+
+export const readLxSourceBackup = async (id: string): Promise<LxSourceBackup | null> => {
+    try {
+        const stored = await getFromCache<LxSourceBackup>(backupKey(id));
+        return typeof stored?.code === 'string' && stored.code ? { ...stored, at: stored.at ?? 0 } : null;
+    } catch (error) {
+        console.warn('[LxSource] Failed to read a script backup', error);
+        return null;
+    }
+};
+
+export const writeLxSourceBackup = async (id: string, backup: LxSourceBackup): Promise<void> => {
+    try {
+        await saveToCache(backupKey(id), backup);
+    } catch (error) {
+        console.warn('[LxSource] Failed to save a script backup', error);
+    }
+};
+
 export const deleteLxSourceScript = async (id: string): Promise<void> => {
     try {
         await removeFromCache(scriptKey(id));
+        await removeFromCache(backupKey(id));
     } catch (error) {
         console.warn('[LxSource] Failed to delete a script', error);
     }

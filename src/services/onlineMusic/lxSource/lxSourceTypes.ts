@@ -16,6 +16,16 @@ export interface LxSourceMeta {
     version?: string;
     author?: string;
     homepage?: string;
+    /**
+     * Where a newer copy of the script is fetched from (a raw .js address, or one a release page's
+     * GitHub blob link is turned into). Written when the script is imported and kept beside it, so
+     * the settings page can check it without asking the listener for the address again.
+     */
+    updateUrl?: string;
+    /** When the script was last replaced by an online update, in milliseconds. */
+    updatedAt?: number;
+    /** The version the remote copy had when that update was taken; what a later check compares to. */
+    updateVersion?: string;
     /** Platforms the script declared (from its header or from its first answers). */
     platforms: LxPlatformId[];
     enabled: boolean;

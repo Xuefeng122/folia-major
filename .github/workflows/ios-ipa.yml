@@ -43,6 +43,41 @@ jobs:
           npx cap add ios
           npx cap sync ios
 
+      - name: 编入自带的登录桥（FoliaLoginBridge）
+        run: |
+          set -e
+          SRC=ios-plugin/FoliaLoginBridge.swift
+          test -f "$SRC"
+          cp "$SRC" ios/App/App/FoliaLoginBridge.swift
+          # 自定义插件要按类名登记，Capacitor 才会把 Web 的调用指到这个类。
+          node - <<'JS'
+          const fs = require('fs');
+          const path = 'ios/App/App/capacitor.config.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const names = new Set(config.packageClassList || []);
+          names.add('FoliaLoginBridge');
+          config.packageClassList = [...names];
+          fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
+          console.log('packageClassList: ' + config.packageClassList.join(', '));
+          JS
+          grep -q 'FoliaLoginBridge' ios/App/App/capacitor.config.json
+          # 放进目录不等于编进 App：必须进 App target 的编译清单。
+          gem install xcodeproj --no-document > /dev/null || gem install xcodeproj --user-install --no-document > /dev/null
+          ruby - <<'RB'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('ios/App/App.xcodeproj')
+          target = project.targets.find { |t| t.name == 'App' } or abort('App target 不存在')
+          group = project.main_group.find_subpath('App', false) || project.main_group
+          name = 'FoliaLoginBridge.swift'
+          group.files.select { |f| f.display_name == name }.each(&:remove_from_project)
+          file_ref = group.new_reference(name)
+          target.source_build_phase.add_file_reference(file_ref)
+          project.save
+          puts "已加入 #{target.name} target：#{name}"
+          RB
+          grep -q 'FoliaLoginBridge.swift' ios/App/App.xcodeproj/project.pbxproj
+          grep -q 'FoliaLoginBridge.swift in Sources' ios/App/App.xcodeproj/project.pbxproj
+
       - name: 调整 Info.plist（文件共享 / 横竖屏 / 明文 HTTP）
         run: |
           PLIST=ios/App/App/Info.plist
