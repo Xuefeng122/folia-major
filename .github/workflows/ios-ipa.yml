@@ -1,0 +1,92 @@
+name: iOS 未签名 ipa 构建
+
+on:
+  push:
+    branches: [ios-ipa]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 安装依赖
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --no-audit --no-fund
+
+      - name: 安装 Capacitor 依赖
+        run: |
+          npm i --no-save \
+            @capacitor/core@8 \
+            @capacitor/ios@8 \
+            @capacitor/cli@8 \
+            @capacitor/splash-screen@8 \
+            @capacitor/status-bar@8
+
+      - name: 构建 Web 产物（capacitor 目标）
+        env:
+          FOLIA_BUILD_TARGET: capacitor
+          VITE_NETEASE_API_BASE: ${{ vars.VITE_NETEASE_API_BASE }}
+          VITE_KUGOU_API_BASE: ${{ vars.VITE_KUGOU_API_BASE }}
+          VITE_FOLIA_API_BASE: ${{ vars.VITE_FOLIA_API_BASE }}
+        run: npm run build
+
+      - name: 生成并同步 iOS 工程
+        run: |
+          npx cap add ios
+          npx cap sync ios
+
+      - name: 调整 Info.plist（文件共享 / 横竖屏）
+        run: |
+          PLIST=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :UIFileSharingEnabled true" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations array" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationPortrait" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationPortraitUpsideDown" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:2 string UIInterfaceOrientationLandscapeLeft" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:3 string UIInterfaceOrientationLandscapeRight" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad array" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:0 string UIInterfaceOrientationPortrait" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:1 string UIInterfaceOrientationPortraitUpsideDown" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:2 string UIInterfaceOrientationLandscapeLeft" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:3 string UIInterfaceOrientationLandscapeRight" "$PLIST" 2>/dev/null || true
+          plutil -p "$PLIST"
+
+      - name: xcodebuild（无签名 Release）
+        run: |
+          cd ios/App
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: 打包 ipa
+        run: |
+          APP=$(find ios/App/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          echo "app=$APP"
+          rm -rf Payload Folia-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/App.app
+          codesign -f -s - --deep Payload/App.app || echo "ad-hoc 签名跳过"
+          zip -qry Folia-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Folia-unsigned-ipa
+          path: Folia-unsigned.ipa
+          if-no-files-found: error
