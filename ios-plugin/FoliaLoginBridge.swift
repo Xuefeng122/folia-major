@@ -40,7 +40,8 @@ public class FoliaLoginBridge: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegate
         + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
 
     private var hostController: UIViewController?
-    private var webView: WKWebView?
+    // 不叫 webView：CAPPlugin 自己就带着一个 webView，同名会撞成「覆盖属性」编译不过。
+    private var loginWebView: WKWebView?
     private var pollTimer: Timer?
     private var pollDomain: String = ""
     private var pollCookieNames: [String] = []
@@ -86,7 +87,7 @@ public class FoliaLoginBridge: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegate
                 return
             }
             // 已经在登录页里了：把新的地址直接载进同一个页面，不再叠一层。
-            if let webView = self.webView {
+            if let webView = self.loginWebView {
                 self.titleLabel?.text = title
                 webView.customUserAgent = userAgent
                 webView.load(URLRequest(url: url))
@@ -104,7 +105,7 @@ public class FoliaLoginBridge: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegate
             webView.navigationDelegate = self
             webView.uiDelegate = self
             webView.allowsBackForwardNavigationGestures = true
-            self.webView = webView
+            self.loginWebView = webView
 
             let controller = self.makeLoginController(title: title, webView: webView)
             controller.modalPresentationStyle = .fullScreen
@@ -301,13 +302,13 @@ public class FoliaLoginBridge: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegate
         pollTimer = nil
         let controller = hostController
         hostController = nil
-        let hadPage = controller != nil || webView != nil
-        webView?.navigationDelegate = nil
-        webView?.uiDelegate = nil
+        let hadPage = controller != nil || loginWebView != nil
+        loginWebView?.navigationDelegate = nil
+        loginWebView?.uiDelegate = nil
         if controller != nil {
             controller?.dismiss(animated: true) { [weak self] in
-                self?.webView?.stopLoading()
-                self?.webView = nil
+                self?.loginWebView?.stopLoading()
+                self?.loginWebView = nil
                 self?.doneButton = nil
                 self?.doneReady = false
                 if hadPage && !silent {
@@ -315,7 +316,7 @@ public class FoliaLoginBridge: CAPPlugin, CAPBridgedPlugin, WKNavigationDelegate
                 }
             }
         } else {
-            webView = nil
+            loginWebView = nil
             doneButton = nil
             doneReady = false
             if hadPage && !silent {
