@@ -64,8 +64,14 @@ jobs:
       - name: xcodebuild（无签名 Release）
         run: |
           cd ios/App
-          xcodebuild \
-            -workspace App.xcworkspace \
+          ls -la
+          if [ -d App.xcworkspace ]; then
+            CONTAINER="-workspace App.xcworkspace"
+          else
+            CONTAINER="-project App.xcodeproj"
+          fi
+          echo "container=$CONTAINER"
+          xcodebuild $CONTAINER \
             -scheme App \
             -configuration Release \
             -sdk iphoneos \
