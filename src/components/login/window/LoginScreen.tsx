@@ -17,7 +17,7 @@ import { LOGIN_CASE_TEXTS } from './loginCaseTexts';
 import LoginMessage, { LoginDetails, type MessageAction } from './LoginMessage';
 import LoginTile from './LoginTile';
 import { shortAccountId } from '../../../utils/accountIdDisplay';
-import { accountView, failureNoteKey, failureQuote, loginScene, sceneHeadline, stepMarks, type RowLead } from './loginView';
+import { accountView, failureNoteKey, failureQuote, loginScene, sceneHeadline, stepMarks, type LoginScene, type RowLead } from './loginView';
 import FormLogin from './FormLogin';
 import LoginWindow from './LoginWindow';
 import PlatformColumn from './PlatformColumn';
@@ -82,6 +82,14 @@ export type LoginScreenProps = {
 const nothing = () => { };
 const nothingDone = async () => false;
 
+/**
+ * 哪几幅里画「网页登录」这一颗。iOS 壳里这是首选入口（选平台就直接开官方网页登录页，见 LoginHost 的 startLogin），
+ * 所以扫码已经画出来、正在起、表单、出错时都要留着它，让人随时能改走网页——不能只在「还没开始」那一幅里给。
+ */
+const WEB_LOGIN_SCENES: ReadonlySet<LoginScene> = new Set<LoginScene>([
+    'none', 'methods', 'browser-ready', 'preparing', 'browser', 'code', 'form', 'failed',
+]);
+
 /** 到了 `at` 这个时刻没有（毫秒时间戳）；没到就在那一刻再画一次。 */
 const useReached = (at: number): boolean => {
     const [tick, setTick] = useState(0);
@@ -123,6 +131,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     const webLoginActions: MessageAction[] = webLogin?.available && providerId && webLogin.supported(providerId)
         ? [{
             label: t(webLogin.busy ? 'login.webLoginRunning' : 'login.webLogin'),
+            // iOS 壳里网页登录是首选入口：它排在这一排的第一个，也占主位（扫码、表单都退到它后面）。
+            primary: true,
             busy: webLogin.busy,
             disabled: webLogin.busy,
             onClick: () => webLogin.run(providerId),
@@ -216,8 +226,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
     // 网页登录是「另一条路」，放在次要位置：等选登录方式、等点打开浏览器、以及登录失败之后。
     // 它的说明只在没有别的说明时补上，不抢平台自己的话。
-    if (webLoginActions.length > 0 && (scene === 'methods' || scene === 'browser-ready' || scene === 'failed')) {
-        actions = [...actions.filter(action => action.primary), ...webLoginActions, ...actions.filter(action => !action.primary)];
+    // 网页登录这一颗在登录的任何一步都在：扫码画出来的时候（code / browser / browser-ready）、还在起（preparing）、
+    // 表单式平台（form）、出错时（failed）、还没选方式时（methods）都能随时改走网页。
+    // 只在不该动手的那几幅里不画：已经登录（account / accountless）、配置清单（setup）、
+    // 扫到了 / 正在读 / 正在核（scanned / reading / checking），以及什么都没有（none）。
+    if (webLoginActions.length > 0 && WEB_LOGIN_SCENES.has(scene)) {
+        // 首屏就给：这一颗排在所有按钮之前（连原来那个主位按钮也让给它），说明只在没有别的说明时补上。
+        actions = [...webLoginActions, ...actions];
         if (!note) note = webLogin?.note(providerId ?? null) ?? undefined;
     }
 

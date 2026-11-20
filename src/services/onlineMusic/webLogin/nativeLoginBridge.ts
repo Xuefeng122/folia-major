@@ -52,13 +52,11 @@ interface CapacitorGlobal {
 
 const BRIDGE_NAME = 'FoliaLoginBridge';
 
-const asPlugin = (value: unknown): LoginBridgePlugin | null => {
-    if (!value || typeof value !== 'object') return null;
-    const candidate = value as Partial<LoginBridgePlugin>;
-    return typeof candidate.openLoginPage === 'function' && typeof candidate.readCookies === 'function'
-        ? candidate as LoginBridgePlugin
-        : null;
-};
+// 只要是个对象就当作桥：registerPlugin 给的是按需生成的代理（Capacitor 8 里方法不一定在对象上
+// 枚举得出来），按方法名判会把真机上的桥误判成「没有」。真缺方法时每个调用各自 try/catch，界面照样有话说。
+const asPlugin = (value: unknown): LoginBridgePlugin | null => (
+    value && typeof value === 'object' ? value as LoginBridgePlugin : null
+);
 
 const capacitorGlobal = (): CapacitorGlobal | null => (globalThis as { Capacitor?: CapacitorGlobal }).Capacitor ?? null;
 
@@ -95,8 +93,91 @@ export const nativeLoginBridge = (): LoginBridgePlugin | null => {
 /** 兜底的那一份：同步那一条没拿到时再问一次（负结果不缓存，插件晚一步注册也还能用上）。 */
 const loadLoginBridge = async (): Promise<LoginBridgePlugin | null> => nativeLoginBridge();
 
-/** 网页登录在这个环境里能不能用（有桥，且桥声称有这个办法）。 */
-export const canUseWebLogin = (): boolean => nativeLoginBridge() !== null;
+/** 这是不是 iOS 原生壳（Capacitor 的 iOS 容器）。网页版 / 桌面版这里恒为 false。 */
+export const isIosNativePlatform = (): boolean => {
+    try {
+        if (typeof CapacitorCore?.isNativePlatform === 'function' && !CapacitorCore.isNativePlatform()) return false;
+        return typeof CapacitorCore?.getPlatform === 'function' && CapacitorCore.getPlatform() === 'ios';
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * 网页登录在这个环境里该不该出现。
+ *
+ * 只要跑在 iOS 原生壳里就给这一项：插件是编进 App target、按类名登记进 packageClassList 的，
+ * registerPlugin 拿到的代理对象在彩色打印（Capacitor 8 的 createPluginHandle）下不一定能把方法名
+ * 一一枚举出来，早先按「有没有 openLoginPage 这个方法」判会把入口整个吞掉——真机上一版就是这么没的。
+ * 桥真的不在时，按下去会说清楚（login.webLoginUnavailable），入口本身不能凭一次探测就消失。
+ */
+export const canUseWebLogin = (): boolean => nativeLoginBridge() !== null || isIosNativePlatform();
+
+/**
+ * 现在这一份页面里，桥是"没有"还是"还没到"。诊断用（设置里的登录诊断报告、真机排查）。
+ * 只报事实，不做任何写入。
+ */
+export const loginBridgeDiagnostics = (): {
+    platform: string;
+    native: boolean;
+    /** 原生注入的运行时里直接就有这一份插件（window.Capacitor.Plugins.FoliaLoginBridge）。 */
+    runtimePlugin: boolean;
+    /** 原生在文档开头推的插件头（packageClassList 认到才会推）。 */
+    headerSeen: boolean;
+    /** registerPlugin 拿到的是一个可用的插件对象。 */
+    registered: boolean;
+    /** 代理对象上能直接看到 openLoginPage / readCookies 这两个方法（调试用，不参与判定）。 */
+    methodsVisible: boolean;
+} => {
+    const capacitor = capacitorGlobal() as (CapacitorGlobal & { PluginHeaders?: { name?: string }[] }) | null;
+    const headers = Array.isArray(capacitor?.PluginHeaders) ? capacitor!.PluginHeaders! : [];
+    let native = false;
+    try {
+        native = Boolean(CapacitorCore?.isNativePlatform?.());
+    } catch {
+        native = false;
+    }
+    let registered = false;
+    try {
+        registered = asPlugin(registerPlugin(BRIDGE_NAME)) !== null;
+    } catch {
+        registered = false;
+    }
+    return {
+        platform: (() => {
+            try {
+                return typeof CapacitorCore?.getPlatform === 'function' ? CapacitorCore.getPlatform() : 'unknown';
+            } catch {
+                return 'unknown';
+            }
+        })(),
+        native,
+        runtimePlugin: Boolean(asPlugin(capacitor?.Plugins?.[BRIDGE_NAME])),
+        headerSeen: headers.some(header => header?.name === BRIDGE_NAME),
+        registered,
+        methodsVisible: (() => {
+            try {
+                const plugin = registerPlugin(BRIDGE_NAME) as unknown as Partial<LoginBridgePlugin>;
+                return typeof plugin?.openLoginPage === 'function' && typeof plugin?.readCookies === 'function';
+            } catch {
+                return false;
+            }
+        })(),
+    };
+};
+
+/**
+ * 再问一次桥在不在（画界面那一刻可能比原生注入晚一步）。有就记下来，之后 canUseWebLogin 也回 true。
+ * 界面上等不到桥时用它补一次，免得入口因为一次时序就永远不出现。
+ */
+export const probeLoginBridge = async (): Promise<boolean> => {
+    if (nativeLoginBridge()) return true;
+    await new Promise<void>(resolve => {
+        // 让出一轮事件循环：registerPlugin 起的原生调用来得及回来。
+        setTimeout(resolve, 0);
+    });
+    return nativeLoginBridge() !== null;
+};
 
 export type NativeLoginEvent = 'loginCookieFound' | 'loginPageClosed' | 'loginPageError' | 'loginPageTitle';
 

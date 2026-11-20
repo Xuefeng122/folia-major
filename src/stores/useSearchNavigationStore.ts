@@ -9,12 +9,17 @@ import {
     type LocalLibraryDisplayCatalog,
 } from '../services/playbackAdapters';
 import { omni } from '../services/onlineMusic/omni';
+import {
+    PROVIDER_BY_LX_PLATFORM,
+    searchLxSources,
+    type LxSourceSearchHit,
+} from '../services/onlineMusic/lxSource/lxSourcePlayback';
 import type { SubsonicAlbum, SubsonicPlaylist } from '../types/navidrome';
 import type {
     LocalGridViewCollectionDescriptor,
     NavidromeGridViewCollectionDescriptor,
 } from '../library/core/collection/collection.contract';
-import { isLocalPlaybackSong, isNavidromePlaybackSong } from '../utils/appPlaybackGuards';
+import { getPlaybackSongKey, isLocalPlaybackSong, isNavidromePlaybackSong } from '../utils/appPlaybackGuards';
 import { sanitizeSearchHistory, withSearchHistoryQuery, withoutSearchHistoryQuery } from '../utils/searchHistory';
 import { getStoredString, setStoredString } from './storagePrimitives';
 
@@ -323,6 +328,59 @@ const searchNavidromeCollections = async (
     };
 };
 
+/** Turns a row a sound source found into a song the app can play, tagged with the source's name. */
+const songFromLxHit = (hit: LxSourceSearchHit): UnifiedSong | null => {
+    const mediaId = String(hit.row.songmid || hit.row.hash || hit.row.id || '').trim();
+    if (!mediaId) return null;
+    const providerId = PROVIDER_BY_LX_PLATFORM[hit.platform];
+    if (!providerId) return null;
+    const seconds = Number(hit.row.interval);
+    return {
+        id: mediaId,
+        name: hit.row.name ?? '',
+        artists: hit.row.singer ? [{ id: '', name: hit.row.singer }] : [],
+        album: { id: hit.row.albumId ?? '', name: hit.row.albumName ?? '' },
+        durationMs: Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : 0,
+        sourceRef: { kind: 'online', providerId, mediaId },
+        lxSourceName: hit.sourceName,
+        lxSourceId: hit.sourceId,
+    };
+};
+
+/**
+ * The rows the sound sources found for the same keyword, merged into the platform's own answer.
+ * Only the first page is merged: the sources have no paging of their own to keep in step, and a
+ * row the platform already answered is not repeated (the platform's own entry is the better one,
+ * since it names the album, the cover and the qualities).
+ */
+const mergeLxSourceSongs = async (
+    providerId: OnlineProviderId,
+    query: string,
+    offset: number,
+    platformSongs: UnifiedSong[],
+): Promise<UnifiedSong[]> => {
+    if (offset > 0) return platformSongs;
+    let hits: LxSourceSearchHit[] = [];
+    try {
+        hits = await searchLxSources(providerId, query, 1);
+    } catch (error) {
+        console.warn('[LxSource] Search merge skipped', error);
+        return platformSongs;
+    }
+    if (!hits.length) return platformSongs;
+    const seen = new Set(platformSongs.map(song => getPlaybackSongKey(song)));
+    const merged = [...platformSongs];
+    for (const hit of hits) {
+        const song = songFromLxHit(hit);
+        if (!song) continue;
+        const key = getPlaybackSongKey(song);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(song);
+    }
+    return merged;
+};
+
 const searchOnlineProviderSongs = async (
     providerId: OnlineProviderId,
     query: string,
@@ -330,7 +388,14 @@ const searchOnlineProviderSongs = async (
     offset: number,
 ): Promise<SearchExecutionResult> => {
     const page = await omni.searchProviderSongs(providerId, query, { limit, offset });
-    return { results: page.items, collections: [], hasMore: page.hasMore, nextOffset: page.nextOffset, total: page.total };
+    const results = await mergeLxSourceSongs(providerId, query, offset, page.items);
+    return {
+        results,
+        collections: [],
+        hasMore: page.hasMore,
+        nextOffset: page.nextOffset,
+        total: page.total === null || page.total === undefined ? page.total : page.total + (results.length - page.items.length),
+    };
 };
 
 const searchOnlineProviderCollections = async (

@@ -37,6 +37,7 @@ export const O = {
     lxSourceImport: option(LX_SOURCE, 'lxSourceImport', 'options.lxSourceImport'),
     lxSourcePaste: option(LX_SOURCE, 'lxSourcePaste', 'options.lxSourcePaste'),
     lxSourceList: option(LX_SOURCE, 'lxSourceList', 'options.lxSourceList'),
+    lxSourceSwitch: option(LX_SOURCE, 'lxSourceSwitch', 'options.lxSourceSwitch'),
     lxSourceReload: option(LX_SOURCE, 'lxSourceReload', 'options.lxSourceReload'),
     lxSourceUpdate: option(LX_SOURCE, 'lxSourceUpdate', 'options.lxSourceUpdate'),
     lxSourceManifest: option(LX_SOURCE, 'lxSourceManifest', 'options.lxSourceManifest'),

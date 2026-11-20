@@ -8,7 +8,16 @@
 // A script is ordinary code the listener imported: it is compiled as it stands, with `lx` and the
 // global object handed to it. It is not saved, transformed or rewritten.
 
-import type { LxMusicUrlRequest, LxPlatformId, LxQuality, LxSourceMeta } from './lxSourceTypes';
+import type {
+    LxMusicUrlRequest,
+    LxPlatformId,
+    LxQuality,
+    LxSearchRequest,
+    LxSearchRow,
+    LxSearchType,
+    LxSourceMeta,
+    LxSourceProbe,
+} from './lxSourceTypes';
 
 const REQUEST_TIMEOUT_MS = 20000;
 // How long a play waits for a script that registers its handler late (after an `await`, a timer).
@@ -41,6 +50,11 @@ export interface LxSourceHost {
     /** The last answer the script sent the app through `lx.send` (a notice, usually), for the UI. */
     readonly lastSent: unknown;
     getMusicUrl(platform: LxPlatformId, musicInfo: Record<string, unknown>, quality: LxQuality): Promise<string | null>;
+    /**
+     * Asks the same handler for songs by keyword. A script that does not implement search answers
+     * nothing, which is not an error: the source simply contributes no rows of its own.
+     */
+    search(platform: LxPlatformId, keyword: string, page: number, type?: LxSearchType): Promise<LxSearchRow[]>;
     dispose(): void;
 }
 
@@ -107,6 +121,48 @@ export const allLxVersionGateReports = (): LxVersionGateReport[] => Array.from(v
 
 export const clearLxVersionGateReports = (): void => {
     versionGateReports.clear();
+};
+
+/**
+ * What a script said when it found itself out of date. 长青 does not merely log the finding: it sends
+ * `updateAlert` and returns before it registers its request handler, so a source that was told about
+ * a newer release speaks for nothing at all — every play on it ends unresolved. Nothing the listener
+ * sees would say why unless the notice is kept: the settings row reads it from here and offers the
+ * update, and the sandbox stops pretending the script is merely broken.
+ */
+export interface LxUpdateAlert {
+    id: string;
+    name: string;
+    /** The sentence the script sent, already made readable for the listener. */
+    log: string;
+    /** Where the script says its newer copy lives; empty where it named none. */
+    updateUrl: string;
+    /** The version the script found, where its notice carried one. */
+    remoteVersion?: string;
+    at: number;
+}
+
+const updateAlerts = new Map<string, LxUpdateAlert>();
+
+export const lxUpdateAlertOf = (id: string): LxUpdateAlert | null => updateAlerts.get(id) ?? null;
+
+export const allLxUpdateAlerts = (): LxUpdateAlert[] => Array.from(updateAlerts.values());
+
+export const clearLxUpdateAlert = (id: string): void => {
+    updateAlerts.delete(id);
+};
+
+export const clearLxUpdateAlerts = (): void => {
+    updateAlerts.clear();
+};
+
+/** The readable text of an `updateAlert` body: scripts send an obfuscated blob under `log`. */
+const readAlertLog = (data: unknown): string => {
+    if (!data || typeof data !== 'object') return typeof data === 'string' ? data : '';
+    const body = data as { log?: unknown; msg?: unknown; message?: unknown; description?: unknown };
+    const candidate = [body.log, body.msg, body.message, body.description]
+        .find(value => typeof value === 'string' && value.trim()) as string | undefined;
+    return candidate ? candidate.trim() : '';
 };
 
 /** The version the gate claims when the script's own header names none: high enough to never alert. */
@@ -340,8 +396,28 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
                     Object.keys(sources).forEach(key => platforms.add(key as LxPlatformId));
                 }
             }
-            if (event === LX_EVENT_NAMES.inited || event === LX_EVENT_NAMES.updateAlert) {
-                console.log(`[LxSource] ${meta.name} ${event}`, data);
+            if (event === LX_EVENT_NAMES.updateAlert) {
+                const body = (data ?? {}) as { updateUrl?: unknown; version?: unknown };
+                const updateUrl = typeof body.updateUrl === 'string' ? body.updateUrl.trim() : '';
+                const remoteVersion = typeof body.version === 'string' ? body.version.trim() : undefined;
+                updateAlerts.set(meta.id, {
+                    id: meta.id,
+                    name: meta.name,
+                    log: readAlertLog(data) || `${meta.name} 发现新版本，请更新后使用`,
+                    updateUrl,
+                    remoteVersion,
+                    at: Date.now(),
+                });
+                console.warn(
+                    `[LxSource] ${meta.name} 报告需要更新（远端 ${remoteVersion ?? '未知'}，发布地址 `
+                    + `${updateUrl || '脚本未提供'}）；该脚本已停止初始化，需在音源列表点「更新到最新」`,
+                );
+            }
+            if (event === LX_EVENT_NAMES.inited) {
+                // A source that initialises is not out of date after all: whatever it said before
+                // (a previous run, a release that has since been installed) no longer applies.
+                updateAlerts.delete(meta.id);
+                console.log(`[LxSource] ${meta.name} inited`, data);
             }
         },
         request(
@@ -396,14 +472,22 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
     };
 
     const globalScope = globalThis as unknown as Record<string, unknown> & { lx?: unknown };
-    // The script reads `lx` from the global object: it is put there for the compile and left in
-    // place, because a handler usually reaches for it long after the script's last line ran.
+    // Both scripts in the wild open with `const {...} = globalThis['lx']`: they read the API off the
+    // global object instead of taking it as an argument, so without this assignment the compile
+    // throws a TypeError on its first line and the source is filed away as broken. It is put up for
+    // the compile and taken down again in the `finally`, so nothing outside the sandbox can see it;
+    // the handlers keep the object they destructured, which is all they ever use.
+    const hadLx = Object.prototype.hasOwnProperty.call(globalScope, 'lx');
+    const previousLx = globalScope.lx;
     globalScope.lx = lx;
     try {
         const runner = new Function('lx', 'self', 'window', code);
         runner.call(globalScope, lx, globalScope, globalScope);
     } catch (error) {
         throw new LxSourceScriptError(meta.name, error instanceof Error ? error.message : String(error));
+    } finally {
+        if (hadLx) globalScope.lx = previousLx;
+        else delete (globalScope as { lx?: unknown }).lx;
     }
 
     /** Waits a short while for a handler a script registers asynchronously; null where none came. */
@@ -422,6 +506,16 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
         if (typeof answer === 'string') return answer.startsWith('http') ? answer : null;
         const url = (answer as { url?: unknown }).url;
         return typeof url === 'string' && url.startsWith('http') ? url : null;
+    };
+
+    /** A script answers a search with `{ list: [...] }` (or the array itself); anything else is no rows. */
+    const readSearchRows = (answer: unknown): LxSearchRow[] => {
+        if (!answer) return [];
+        const list = Array.isArray(answer)
+            ? answer
+            : (answer as { list?: unknown }).list;
+        if (!Array.isArray(list)) return [];
+        return list.filter((row): row is LxSearchRow => Boolean(row) && typeof row === 'object');
     };
 
     return {
@@ -456,11 +550,57 @@ export const createLxSourceHost = (meta: LxSourceMeta, code: string): LxSourceHo
             );
             return readUrl(answer);
         },
+        async search(platform, keyword, page, type = 'song') {
+            if (disposed) return [];
+            const handler = await waitForHandler();
+            if (!handler) return [];
+            const payload: LxSearchRequest = {
+                source: platform,
+                action: 'search',
+                info: { keyword, page, type },
+            };
+            try {
+                const answer = await withTimeout(
+                    Promise.resolve().then(() => handler(payload)),
+                    REQUEST_TIMEOUT_MS,
+                    `${meta.name} did not answer the search within ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s`,
+                );
+                return readSearchRows(answer);
+            } catch (error) {
+                // A script that cannot search is no reason to fail the whole search: it just adds nothing.
+                const message = error instanceof Error ? error.message : String(error);
+                console.warn(`[LxSource] ${meta.name} answered no rows for "${keyword}": ${message}`);
+                return [];
+            }
+        },
         dispose() {
             disposed = true;
             handlers.clear();
         },
     };
+};
+
+/**
+ * Runs a freshly imported script just long enough to see whether it compiles, registers its handler
+ * and reports the platforms it speaks for. Import uses this as its check: a script that throws here
+ * is reported with the reason instead of being stored and failing at play time.
+ */
+export const probeLxSourceScript = async (
+    meta: LxSourceMeta,
+    code: string,
+    waitMs = 2500,
+): Promise<LxSourceProbe> => {
+    const host = createLxSourceHost(meta, code);
+    try {
+        const deadline = Date.now() + waitMs;
+        // Most scripts send `inited` on the last line; a few wait on a request of their own first.
+        while (!host.usable && host.platforms.length === 0 && Date.now() < deadline) {
+            await new Promise<void>(resolve => { globalThis.setTimeout(resolve, 60); });
+        }
+        return { usable: host.usable, platforms: host.platforms, notice: host.lastSent };
+    } finally {
+        host.dispose();
+    }
 };
 
 /** Reads the header comment of an imported script: its name, version and the like. */

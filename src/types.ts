@@ -1627,6 +1627,10 @@ export interface UnifiedSong extends SongResult {
   localRef?: import('./types/localLibrary').LocalSongReference;
   isNavidrome?: boolean;
   navidromeData?: any;
+  // Which sound source answered this row, where the search merged the sources' answers into the
+  // platform's own: the list says where a song came from, and playing it asks that source first.
+  lxSourceName?: string;
+  lxSourceId?: string;
 }
 
 export type ReplayGainMode = 'off' | 'track' | 'album' | 'auto';

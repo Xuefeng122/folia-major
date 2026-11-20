@@ -1,9 +1,9 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import type { LibraryAccountController } from '../../library/core/account/account.contract';
 import { setStatusMessage } from '../../stores/useStatusMessageStore';
 import type { OnlineProviderId } from '../../types/onlineMusic';
-import { canUseWebLogin } from '../../services/onlineMusic/webLogin/nativeLoginBridge';
+import { canUseWebLogin, loginBridgeDiagnostics, probeLoginBridge } from '../../services/onlineMusic/webLogin/nativeLoginBridge';
 import { platformWebLogin } from '../../services/onlineMusic/webLogin/platformWebLogin';
 import { runWebLogin } from '../../services/onlineMusic/webLogin/webLoginSession';
 import { syncAccountData } from './syncAccountData';
@@ -29,7 +29,23 @@ export const useWebLoginAction = (
     account: LibraryAccountController,
     t: TFunction,
 ): WebLoginAction => {
-    const available = useMemo(() => canUseWebLogin(), []);
+    // 有桥就给这一颗，而且它是默认入口（选平台直接开官方网页登录页，见 LoginHost 的 startLogin）。
+    // 首次渲染时桥可能还差一步（原生注入晚一轮）：探一次，探到了再把入口画出来，不让时序把入口吞掉。
+    const [available, setAvailable] = useState(() => canUseWebLogin());
+    useEffect(() => {
+        if (available) return;
+        let live = true;
+        void probeLoginBridge().then(ready => {
+            if (!live || !ready) return;
+            setAvailable(true);
+        });
+        return () => { live = false; };
+    }, [available]);
+    // 真机排查用：入口在不在、桥探到什么，都打一条（平台、原生、原生插件头、registerPlugin、方法可见性各说一句）。
+    // 上一版真机上入口没出现，日志里什么也没有，只能靠猜；这一句是给下一次排查留的现场。
+    useEffect(() => {
+        console.info(`[webLogin] entry ${available ? 'shown' : 'hidden'}`, loginBridgeDiagnostics());
+    }, [available]);
     const [busy, setBusy] = useState(false);
     // 登录页开着的时候再按一次不该叠第二层网页。
     const running = useRef(false);

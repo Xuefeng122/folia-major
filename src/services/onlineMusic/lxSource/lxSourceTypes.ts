@@ -38,6 +38,9 @@ export interface LxSourceMeta {
     lastError?: string;
 }
 
+/** The kinds of search an LX script may be asked for; only songs are asked for by this app. */
+export type LxSearchType = 'song' | 'album' | 'singer' | 'playlist';
+
 /** What a script's `request` handler is asked for; `action` is 'musicUrl' here. */
 export interface LxMusicUrlRequest {
     source: LxPlatformId;
@@ -46,6 +49,41 @@ export interface LxMusicUrlRequest {
         type: LxQuality;
         musicInfo: Record<string, unknown>;
     };
+}
+
+/** The same handler is asked for songs by keyword; a script that does not support it answers nothing. */
+export interface LxSearchRequest {
+    source: LxPlatformId;
+    action: 'search';
+    info: {
+        keyword: string;
+        page: number;
+        type: LxSearchType;
+    };
+}
+
+/** One row of a script's search answer, as LX names its fields (a script fills what it has). */
+export interface LxSearchRow {
+    name?: string;
+    singer?: string;
+    albumName?: string;
+    albumId?: string;
+    songmid?: string;
+    hash?: string;
+    id?: string;
+    interval?: string | number;
+    /** The qualities the row has, in the script's own names ('128k', '320k', 'flac'). */
+    types?: Array<{ type?: string }>;
+}
+
+/** What a script was found to be after being run: whether it answered, and what it speaks for. */
+export interface LxSourceProbe {
+    /** Whether the script registered a `request` handler (without one it can do nothing). */
+    usable: boolean;
+    /** The platforms it named in its `inited` notice; empty where it named none. */
+    platforms: LxPlatformId[];
+    /** The last notice it sent, usually `inited` itself, for the row to show. */
+    notice: unknown;
 }
 
 export interface LxScriptInfo {

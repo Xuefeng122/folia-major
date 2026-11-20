@@ -8,6 +8,7 @@
 // version is compared on its text, so a release that changed only its code still counts.
 
 import { createLxSourceHost, readLxScriptHeader } from './lxSourceSandbox';
+import { readLxAddressText } from './nativeScriptFetch';
 import {
     readLxSourceBackup,
     readLxSourceScript,
@@ -17,7 +18,6 @@ import {
 import { useLxSourceStore } from './lxSourceStore';
 import type { LxPlatformId, LxSourceMeta } from './lxSourceTypes';
 
-const FETCH_TIMEOUT_MS = 20000;
 const MANIFEST_KEY = 'folia_lx_update_manifest';
 
 /**
@@ -139,27 +139,26 @@ const addressesOf = (meta: LxSourceMeta): string[] => {
     return found.filter(address => /^https?:\/\//iu.test(address));
 };
 
+/**
+ * Reads a script or a version manifest from its address. On the phone the read goes through the
+ * native bridge (see nativeScriptFetch): an update address is another origin and WebKit refuses a
+ * cross-origin fetch from the app's own origin, which is why every check used to end in
+ * 「下载失败」. What comes back is checked before it is trusted: not a page, not mojibake.
+ */
 const fetchScriptText = async (address: string): Promise<string> => {
-    const controller = new AbortController();
-    const timer = globalThis.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    try {
-        const response = await fetch(address, {
-            signal: controller.signal,
-            headers: { Accept: 'text/plain, application/javascript, */*' },
-            cache: 'no-store',
-        });
-        if (!response.ok) {
-            throw new Error(`${response.status} ${response.statusText}`.trim());
-        }
-        const code = await response.text();
-        if (!code.trim()) throw new Error('the address answered nothing');
-        if (/^\s*</u.test(code) && /<html/iu.test(code.slice(0, 400))) {
-            throw new Error('the address answered a page instead of a script');
-        }
-        return code.replace(/^\uFEFF/u, '');
-    } finally {
-        globalThis.clearTimeout(timer);
+    const answer = await readLxAddressText(address);
+    const code = answer.text.replace(/^\uFEFF/u, '');
+    if (!code.trim()) throw new Error('地址返回了空内容');
+    if (/^\s*</u.test(code) && /<html/iu.test(code.slice(0, 400))) {
+        throw new Error('地址返回的是网页而不是脚本');
     }
+    // A script stored in GBK arrives as replacement characters once read as UTF-8: 长青/念心 both
+    // ship UTF-8, so this catches a wrong-encoded copy rather than silently storing it broken.
+    if (code.includes('\uFFFD')) {
+        throw new Error('无法解析文件编码（建议使用 UTF-8 保存）');
+    }
+    console.log(`[LxSource] 读取 ${address} 成功（${answer.through === 'native' ? '原生通道' : 'fetch'}，${code.length} 字符）`);
+    return code;
 };
 
 /** Numeric-aware comparison of two `@version` texts; >0 when `a` is newer than `b`. */
@@ -219,8 +218,13 @@ const parseVersionManifest = (text: string): VersionManifest | null => {
 /** The answer kept for a check: the code is held so `applyLxSourceUpdate` publishes what was read. */
 const fetched = new Map<string, { code: string; address: string; version?: string }>();
 
-export const checkLxSourceUpdate = async (meta: LxSourceMeta): Promise<LxUpdateCheck> => {
-    const addresses = addressesOf(meta);
+export const checkLxSourceUpdate = async (
+    meta: LxSourceMeta,
+    // An updateAlert names its own release address; checking that one first is what the card on
+    // the source's row does, rather than re-guessing from the header.
+    explicitAddresses?: string[],
+): Promise<LxUpdateCheck> => {
+    const addresses = explicitAddresses?.length ? explicitAddresses : addressesOf(meta);
     if (!addresses.length) {
         return {
             id: meta.id,

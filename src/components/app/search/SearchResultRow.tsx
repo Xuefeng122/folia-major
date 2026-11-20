@@ -139,6 +139,18 @@ const SearchResultRow: React.FC<SearchResultRowProps> = ({
                                 </button>
                             </>
                         )}
+                        {/* 这一行是音源找到的：标签说明来源，点播放时也先问它。 */}
+                        {track.lxSourceName && (
+                            <>
+                                <span className="shrink-0 opacity-40" aria-hidden="true">/</span>
+                                <span
+                                    className="shrink-0 border border-current/20 px-1.5 py-px text-[10px] font-semibold opacity-70"
+                                    title={track.lxSourceName}
+                                >
+                                    {track.lxSourceName}
+                                </span>
+                            </>
+                        )}
                     </div>
                 </div>
 

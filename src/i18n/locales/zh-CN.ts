@@ -8,6 +8,15 @@ export default {
     "pasteHint": "把音源脚本的全文粘进来。",
     "pastePlaceholder": "在这里粘贴音源脚本全文…",
     "importText": "导入",
+    "importFromAddress": "从地址导入",
+    "importFromAddressPlaceholder": "https://…/音源.js",
+    "importFromAddressHint": "填入脚本地址（支持 GitHub 文件页），导入后会把地址留作更新检查用。",
+    "importingCheck": "正在检查脚本…",
+    "searchedFrom": "来自音源「{{name}}」",
+    "switchedTo": "已自动换到音源「{{name}}」",
+    "switchedFrom": "前一个音源没给出地址：{{list}}",
+    "noneAnswered": "《{{name}}》没有音源给出播放地址",
+    "triedList": "已按顺序试过：{{list}}",
     "empty": "还没有导入音源",
     "emptyHint": "没有音源时，平台给不出地址的歌曲就放不了。导入一个之后，那些歌会由音源接手。",
     "imported": "已导入「{{name}}」",
@@ -51,6 +60,11 @@ export default {
     "manifestSaved": "更新清单地址已保存",
     "updateOnPage": "有新版本：{{from}} → {{to}}，脚本要从发布页手动取",
     "openRelease": "打开发布页",
+    "updateAlertCta": "更新到最新",
+    "updateAlertNotice": "音源自检报告新版本：{{log}}",
+    "updateAlertStale": "该脚本发现新版本后停止初始化，更新到最新后会自动恢复。",
+    "updateAlertNoAddress": "脚本没给发布地址，先点右侧链条按钮填写更新地址。",
+    "updateAlertDone": "「{{name}}」已更新到 {{version}}，音源已恢复可用",
     "addressCopied": "没能直接打开浏览器，地址已复制：{{address}}",
     "addressCopyFailed": "没能打开浏览器，请手动记下地址：{{address}}",
     "outdatedGate": "音源已过期，点此更新",
@@ -61,7 +75,16 @@ export default {
     "replaceUrlPlaceholder": "https://…/source.js",
     "replaceFromUrl": "从地址拉取",
     "replacePastePlaceholder": "把音源脚本内容粘贴到这里",
-    "replaceApply": "覆盖当前脚本"
+    "replaceApply": "覆盖当前脚本",
+    "qualityDowngraded": "当前音质不可播，已降级到 {{to}}（原为 {{from}}）",
+    "autoSwitchToggle": "自动切换音源",
+    "autoSwitchHint": "这首歌在当前平台拿不到地址时，自动用歌名和歌手去其他已启用的音源找同名歌曲接着放。关掉后只会在本平台内换解析。",
+    "autoSwitching": "正尝试自动切换音源…",
+    "autoSwitchingNote": "正在为《{{name}}》查找其他音源",
+    "autoSwitched": "已自动切换音源",
+    "autoSwitchedNote": "音源「{{name}}」：{{song}}",
+    "autoSwitchFailed": "自动切换失败：无可用音源",
+    "autoSwitchFailedNote": "《{{name}}》在所有已启用的音源里都没有找到可播版本"
   },
   "appleMusic": {
     "libraryPlaylistName": "全部歌曲"
@@ -2496,6 +2519,7 @@ export default {
     "lyricMatchPriorityDesc": "在多个歌词源都存在高置信度匹配时，优先选择该歌词源的结果。"
   },
   "options": {
+    "lxSourceSwitch": "自动切换音源",
     "aiProvider_gemini": "Google Gemini",
     "aiProvider_deepseek": "DeepSeek",
     "aiProvider_mimo": "小米 MiMo",

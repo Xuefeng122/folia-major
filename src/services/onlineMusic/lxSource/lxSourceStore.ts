@@ -4,7 +4,8 @@
 // (lxSourceStorage.ts); nothing here holds their text.
 
 import { create } from 'zustand';
-import { readLxScriptHeader } from './lxSourceSandbox';
+import { clearLxUpdateAlert, lxUpdateAlertOf, probeLxSourceScript, readLxScriptHeader } from './lxSourceSandbox';
+import { readLxAddressText } from './nativeScriptFetch';
 import {
     deleteLxSourceScript,
     readLxSourceMetas,
@@ -46,11 +47,19 @@ const updateAddressFrom = (homepage?: string): string | undefined => {
 };
 
 
+/** Where a source may be imported from: pasted text, a file, or the address its text is served at. */
+export interface LxImportOptions {
+    /** The address the script was read from, kept so the row can check for a newer copy later. */
+    updateUrl?: string;
+}
+
 interface LxSourceState {
     sources: LxSourceMeta[];
     /** A script being imported, so the page can show that something is happening. */
     importing: boolean;
-    importSource: (code: string, fileName?: string) => Promise<LxSourceMeta>;
+    importSource: (code: string, fileName?: string, options?: LxImportOptions) => Promise<LxSourceMeta>;
+    /** Reads a script from an address and imports it, keeping the address for later update checks. */
+    importSourceFromAddress: (address: string) => Promise<LxSourceMeta>;
     removeSource: (id: string) => Promise<void>;
     setEnabled: (id: string, enabled: boolean) => void;
     move: (id: string, direction: -1 | 1) => void;
@@ -61,7 +70,32 @@ interface LxSourceState {
     adoptScript: (id: string, patch: Partial<LxSourceMeta>) => void;
     /** The script of one source, read from the store on first use. */
     readScript: (id: string) => Promise<string | null>;
+    /** Whether a play may switch itself to another source's copy of the same song. */
+    autoSwitch: boolean;
+    setAutoSwitch: (value: boolean) => void;
 }
+
+// Whether a play that runs out of addresses anywhere for its own platform may switch itself to
+// another platform's source. On by default: an iOS play that dies on a preview clip is the worse
+// outcome, and the listener can still turn the chain off.
+const AUTO_SWITCH_KEY = 'folia_lx_auto_switch_v1';
+
+const readAutoSwitch = (): boolean => {
+    try {
+        const stored = globalThis.localStorage?.getItem(AUTO_SWITCH_KEY);
+        return stored === null || stored === undefined ? true : stored === '1';
+    } catch {
+        return true;
+    }
+};
+
+const writeAutoSwitch = (value: boolean): void => {
+    try {
+        globalThis.localStorage?.setItem(AUTO_SWITCH_KEY, value ? '1' : '0');
+    } catch {
+        // A store that cannot be written still keeps the switch for this session.
+    }
+};
 
 const persist = (sources: LxSourceMeta[]) => {
     writeLxSourceMetas(sources.map((source, index) => ({ ...source, order: index })));
@@ -71,7 +105,7 @@ export const useLxSourceStore = create<LxSourceState>((set, get) => ({
     sources: readLxSourceMetas(),
     importing: false,
 
-    async importSource(code, fileName) {
+    async importSource(code, fileName, options) {
         const trimmed = code.replace(/^\uFEFF/, '').trim();
         if (!trimmed) throw new Error('The script is empty');
         set({ importing: true });
@@ -85,12 +119,35 @@ export const useLxSourceStore = create<LxSourceState>((set, get) => ({
                 version: header.version,
                 author: header.author,
                 homepage: header.homepage,
-                updateUrl: updateAddressFrom(header.homepage),
+                // The address the row checks for a newer copy: the one it was imported from, then the
+                // one its own header declares (念心/长青 both publish an update_url), then a guess from
+                // its homepage. Without this a built-in source has nothing to be refreshed against.
+                updateUrl: options?.updateUrl?.trim() || header.updateUrl || updateAddressFrom(header.homepage),
                 platforms: detectPlatforms(trimmed),
                 enabled: true,
                 order: get().sources.length,
                 addedAt: Date.now(),
             };
+            // The script is run once before it is stored: a script that does not compile, or that
+            // registers no handler, is reported now rather than failing silently at play time. What it
+            // says it speaks for outranks what its text looked like it mentioned.
+            let probe;
+            try {
+                probe = await probeLxSourceScript(meta, trimmed);
+            } catch (error) {
+                throw new Error(error instanceof Error ? error.message : String(error));
+            }
+            // A script that found itself out of date registers no handler on purpose: 长青 sends
+            // `updateAlert` and returns. Such a script is still worth keeping — the row offers the
+            // update it asked for — so the missing handler is only fatal where nothing was announced.
+            if (!probe.usable) {
+                const alert = lxUpdateAlertOf(meta.id);
+                if (!alert) throw new Error('脚本没有注册 request 处理器（可能语法不完整）');
+                meta.updateUrl = meta.updateUrl || alert.updateUrl || undefined;
+                console.warn(`[LxSource] ${meta.name} 导入时即报告需要更新：${alert.log}`);
+            }
+            if (probe.platforms.length) meta.platforms = probe.platforms;
+            else meta.platforms = meta.platforms.length ? meta.platforms : ALL_PLATFORMS;
             await writeLxSourceScript(meta.id, trimmed);
             const sources = [...get().sources, meta];
             persist(sources);
@@ -101,10 +158,32 @@ export const useLxSourceStore = create<LxSourceState>((set, get) => ({
         }
     },
 
+    async importSourceFromAddress(address) {
+        const trimmed = address.trim();
+        if (!/^https?:\/\//iu.test(trimmed)) throw new Error('The address must start with http:// or https://');
+        const readAddress = updateAddressFrom(trimmed) ?? trimmed;
+        // Through the native bridge on the phone: a script on another origin cannot be read by fetch
+        // from inside the WebView (no CORS headers on those hosts), so importing by address only works
+        // when the request is made outside it.
+        const { text } = await readLxAddressText(readAddress);
+        const code = text.replace(/^\uFEFF/u, '');
+        if (!code.trim()) throw new Error('地址返回了空内容');
+        // A release page is not a script: saying so is clearer than storing a page's text.
+        if (/^\s*</u.test(code) && /<html/iu.test(code.slice(0, 400))) {
+            throw new Error('这个地址返回的是网页，不是脚本；请打开它指向的 .js 原文地址再导入');
+        }
+        if (/^\s*[[{]/u.test(code) && /"(url|version)"\s*:/u.test(code.slice(0, 600))) {
+            throw new Error('这个地址是版本清单（JSON），不是脚本本身');
+        }
+        const fileName = readAddress.split('/').pop()?.split('?')[0];
+        return get().importSource(code, fileName, { updateUrl: readAddress });
+    },
+
     async removeSource(id) {
         const sources = get().sources.filter(source => source.id !== id);
         persist(sources);
         set({ sources });
+        clearLxUpdateAlert(id);
         await deleteLxSourceScript(id);
     },
 
@@ -142,6 +221,13 @@ export const useLxSourceStore = create<LxSourceState>((set, get) => ({
 
     readScript: id => readLxSourceScript(id),
 
+    autoSwitch: readAutoSwitch(),
+
+    setAutoSwitch(value) {
+        writeAutoSwitch(value);
+        set({ autoSwitch: value });
+    },
+
     setUpdateUrl(id, address) {
         const trimmed = address.trim();
         const sources = get().sources.map(source => (
@@ -175,3 +261,6 @@ export const enabledLxSources = (): LxSourceMeta[] => useLxSourceStore
     .getState()
     .sources
     .filter(source => source.enabled);
+
+/** Whether the play may switch itself to another source's copy of the same song. */
+export const isLxAutoSwitchEnabled = (): boolean => useLxSourceStore.getState().autoSwitch;

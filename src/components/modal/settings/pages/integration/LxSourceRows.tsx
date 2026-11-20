@@ -1,9 +1,10 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Download, ExternalLink, FileUp, Link2, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Row, Status, TextArea, TextField, Toggle } from '../../kit';
 import { useLxSourceStore } from '../../../../../services/onlineMusic/lxSource/lxSourceStore';
 import { lxSourceGateNotice, lxSourceLoadError, resetLxSourceHosts } from '../../../../../services/onlineMusic/lxSource/lxSourcePlayback';
+import { clearLxUpdateAlert, lxUpdateAlertOf } from '../../../../../services/onlineMusic/lxSource/lxSourceSandbox';
 import {
     applyLxSourceUpdate,
     checkAllLxSourceUpdates,
@@ -28,7 +29,18 @@ import { O } from './options';
 export const LxSourceRows: React.FC = () => {
     const { t } = useTranslation();
     const sources = useLxSourceStore(state => state.sources);
+    // A script can announce a newer release while a play is running, which is not a React update:
+    // the render is nudged on a slow tick so the card appears without the listener re-opening the page.
+    const [alertTick, setAlertTick] = useState(0);
+    useEffect(() => {
+        const timer = window.setInterval(() => setAlertTick(value => value + 1), 4000);
+        return () => window.clearInterval(timer);
+    }, []);
     const importSource = useLxSourceStore(state => state.importSource);
+    const importSourceFromAddress = useLxSourceStore(state => state.importSourceFromAddress);
+    const autoSwitch = useLxSourceStore(state => state.autoSwitch);
+    const setAutoSwitch = useLxSourceStore(state => state.setAutoSwitch);
+    const importing = useLxSourceStore(state => state.importing);
     const removeSource = useLxSourceStore(state => state.removeSource);
     const setEnabled = useLxSourceStore(state => state.setEnabled);
     const move = useLxSourceStore(state => state.move);
@@ -40,6 +52,8 @@ export const LxSourceRows: React.FC = () => {
     const [busy, setBusy] = useState<string | null>(null);
     const [addressFor, setAddressFor] = useState<string | null>(null);
     const [addressDraft, setAddressDraft] = useState('');
+    const [urlPasting, setUrlPasting] = useState(false);
+    const [urlDraft, setUrlDraft] = useState('');
     const [manifest, setManifest] = useState(() => lxUpdateManifestAddress());
     const [replaceFor, setReplaceFor] = useState<string | null>(null);
     const [replaceDraft, setReplaceDraft] = useState('');
@@ -109,6 +123,20 @@ export const LxSourceRows: React.FC = () => {
         }
     }, [runImport]);
 
+    /** Imports from a pasted address: the script is read, checked, then stored with its own address. */
+    const runImportFromAddress = useCallback(async (address: string) => {
+        setBusy('address');
+        try {
+            const meta = await importSourceFromAddress(address);
+            resetLxSourceHosts();
+            setNotice(t('lxSource.imported', { name: meta.name }));
+        } catch (error) {
+            setNotice(t('lxSource.importFailed', { reason: error instanceof Error ? error.message : String(error) }));
+        } finally {
+            setBusy(null);
+        }
+    }, [importSourceFromAddress, t]);
+
     const check = useCallback(async (source: LxSourceMeta) => {
         setBusy(source.id);
         try {
@@ -123,6 +151,7 @@ export const LxSourceRows: React.FC = () => {
         setBusy(source.id);
         try {
             const applied = await applyLxSourceUpdate(source, checks[source.id]);
+            clearLxUpdateAlert(source.id);
             resetLxSourceHosts();
             setChecks(current => {
                 const next = { ...current };
@@ -142,6 +171,63 @@ export const LxSourceRows: React.FC = () => {
             setBusy(null);
         }
     }, [checks, t]);
+
+    /**
+     * Runs the update a script itself asked for. 长青 checks its own release on start: when the copy is
+     * old it sends `updateAlert` and returns without registering anything, so the update is the only
+     * way back to a working source — and it has to be a card, not a console line the listener never sees.
+     */
+    const updateFromAlert = useCallback(async (source: LxSourceMeta) => {
+        const alert = lxUpdateAlertOf(source.id);
+        const address = (alert?.updateUrl ?? source.updateUrl ?? '').trim();
+        if (!address) {
+            setNotice(t('lxSource.updateAlertNoAddress'));
+            return;
+        }
+        setBusy(source.id);
+        try {
+            const result = await checkLxSourceUpdate(source, address ? [address] : undefined);
+            if (result.status === 'update') {
+                const applied = await applyLxSourceUpdate(source, result);
+                clearLxUpdateAlert(source.id);
+                resetLxSourceHosts();
+                setChecks(current => {
+                    const next = { ...current };
+                    delete next[source.id];
+                    return next;
+                });
+                setNotice(t('lxSource.updateAlertDone', {
+                    name: applied.name,
+                    version: applied.version || t('lxSource.noVersion'),
+                }));
+                return;
+            }
+            if (result.status === 'manifest') {
+                setChecks(current => ({ ...current, [source.id]: result }));
+                setNotice(t('lxSource.updateOnPage', {
+                    from: result.currentVersion || t('lxSource.noVersion'),
+                    to: result.remoteVersion || t('lxSource.noVersion'),
+                }));
+                return;
+            }
+            if (result.status === 'latest') {
+                clearLxUpdateAlert(source.id);
+                setNotice(t('lxSource.upToDate', { version: result.remoteVersion || t('lxSource.noVersion') }));
+                return;
+            }
+            setChecks(current => ({ ...current, [source.id]: result }));
+            setNotice(result.status === 'error'
+                ? t('lxSource.checkFailed', { reason: result.reason ?? '' })
+                : t('lxSource.noAddress'));
+        } catch (error) {
+            setNotice(t('lxSource.updateFailed', {
+                name: source.name,
+                reason: error instanceof Error ? error.message : String(error),
+            }));
+        } finally {
+            setBusy(null);
+        }
+    }, [t]);
 
     const checkAll = useCallback(async () => {
         setBusy('all');
@@ -245,7 +331,34 @@ export const LxSourceRows: React.FC = () => {
                 <Button variant="quiet" onClick={() => setPasting(value => !value)}>
                     {t('lxSource.paste')}
                 </Button>
+                <Button
+                    variant="quiet"
+                    icon={Link2}
+                    onClick={() => setUrlPasting(value => !value)}
+                >
+                    {t('lxSource.importFromAddress')}
+                </Button>
             </Row>
+            {urlPasting && (
+                <Row option={O.lxSourcePaste} sub hint={t('lxSource.importFromAddressHint')}>
+                    <TextField
+                        value={urlDraft}
+                        onChange={setUrlDraft}
+                        placeholder="https://example.com/lx-source.js"
+                    />
+                    <Button
+                        disabled={!urlDraft.trim() || importing}
+                        onClick={() => {
+                            const address = urlDraft;
+                            setUrlDraft('');
+                            setUrlPasting(false);
+                            void runImportFromAddress(address);
+                        }}
+                    >
+                        {importing ? t('lxSource.importingCheck') : t('lxSource.importFromAddress')}
+                    </Button>
+                </Row>
+            )}
             {pasting && (
                 <Row option={O.lxSourcePaste} sub hint={t('lxSource.pasteHint')}>
                     <TextArea
@@ -266,6 +379,9 @@ export const LxSourceRows: React.FC = () => {
                     </Button>
                 </Row>
             )}
+            <Row option={O.lxSourceSwitch} hint={t('lxSource.autoSwitchHint')}>
+                <Toggle checked={autoSwitch} onChange={setAutoSwitch} />
+            </Row>
             {sources.length === 0
                 ? (
                     <Row option={O.lxSourceList} hint={t('lxSource.emptyHint')}>
@@ -278,8 +394,29 @@ export const LxSourceRows: React.FC = () => {
                     // The gate lets a source past its own "a newer release exists" check so it keeps
                     // working; the row still says so, because the script it runs is not the newest.
                     const gate = lxSourceGateNotice(source.id);
+                    // Read through alertTick so a card announced mid-session still reaches the page.
+                    const alert = alertTick >= 0 ? lxUpdateAlertOf(source.id) : undefined;
                     return (
                         <React.Fragment key={source.id}>
+                            {alert && (
+                                <Row
+                                    option={O.lxSourceList}
+                                    label={source.name}
+                                    hint={t('lxSource.updateAlertStale')}
+                                >
+                                    <Status tone="warn">
+                                        {t('lxSource.updateAlertNotice', { log: alert.log })}
+                                    </Status>
+                                    <Button
+                                        icon={Download}
+                                        variant="primary"
+                                        disabled={busy !== null}
+                                        onClick={() => { void updateFromAlert(source); }}
+                                    >
+                                        {t('lxSource.updateAlertCta')}
+                                    </Button>
+                                </Row>
+                            )}
                             <Row
                                 option={O.lxSourceList}
                                 label={source.name}

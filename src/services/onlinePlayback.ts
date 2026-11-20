@@ -19,8 +19,10 @@ import { isCachedSongAudioDistrusted } from './playbackRecovery/mediaCacheGuard'
 import { toPlayableAudioUrl } from '../utils/appPlaybackHelpers';
 import { getOnlineProviderIdForSong } from '../utils/appPlaybackGuards';
 import { getProviderSongMetadata } from './onlineMusic/songMetadata';
-import { resolveLxSourceUrl } from './onlineMusic/lxSource/lxSourcePlayback';
-import { enabledLxSources } from './onlineMusic/lxSource/lxSourceStore';
+import { resolveLxSourceUrl, searchOtherSourcesForSong } from './onlineMusic/lxSource/lxSourcePlayback';
+import { enabledLxSources, isLxAutoSwitchEnabled } from './onlineMusic/lxSource/lxSourceStore';
+import { setStatusMessage } from '../stores/useStatusMessageStore';
+import i18n from '../i18n/config';
 import { isNativeShell } from '../mods/web/platform';
 import { useLyricSettingsStore } from '../stores/useLyricSettingsStore';
 import { useOnlineProviderAccountStore } from '../stores/useOnlineProviderAccountStore';
@@ -73,6 +75,58 @@ const askLxSources = async (
         console.warn('[OnlinePlayback] An imported source could not be asked for the song', error);
         return null;
     }
+};
+
+/**
+ * The last link of the switch chain: the same song, played from another platform's source.
+ *
+ * Only reached where no enabled source that speaks for the song's own platform handed out an
+ * address: the sources are then asked to *search* for the song by its name and singer and to play
+ * the copy they find. It is what makes a track that its platform only offers as a preview clip
+ * (or not at all, in this region) still play. The switch says so first and last, so a play that
+ * went to another platform's copy is not silently a different recording.
+ */
+const switchToOtherLxSource = async (
+    song: SongResult,
+    audioQuality: AudioQualityPreference,
+): Promise<{ kind: 'ok'; audioSrc: string; replayGain?: ReplayGainInfo; preview: boolean } | null> => {
+    if (!isNativeShell() || !isLxAutoSwitchEnabled() || enabledLxSources().length === 0) return null;
+    setStatusMessage({
+        type: 'info',
+        text: i18n.t('lxSource.autoSwitching'),
+        note: i18n.t('lxSource.autoSwitchingNote', { name: song.name }),
+        durationMs: 5000,
+    });
+    let answer: Awaited<ReturnType<typeof searchOtherSourcesForSong>> = null;
+    try {
+        answer = await searchOtherSourcesForSong(song, audioQuality);
+    } catch (error) {
+        console.warn('[OnlinePlayback] The switch to another source failed', error);
+    }
+    if (!answer) {
+        setStatusMessage({
+            type: 'error',
+            text: i18n.t('lxSource.autoSwitchFailed'),
+            note: i18n.t('lxSource.autoSwitchFailedNote', { name: song.name }),
+            durationMs: 5200,
+        });
+        return null;
+    }
+    setStatusMessage({
+        type: 'success',
+        text: i18n.t('lxSource.autoSwitched'),
+        note: i18n.t('lxSource.autoSwitchedNote', {
+            name: answer.sourceName,
+            song: answer.singer ? `${answer.songName} - ${answer.singer}` : answer.songName,
+        }),
+        durationMs: 5200,
+    });
+    try {
+        updatePrefetchedAudioUrl(song, answer.url, audioQuality);
+    } catch {
+        // A prefetch record that cannot be updated does not stop the play.
+    }
+    return { kind: 'ok' as const, audioSrc: answer.url, preview: false };
 };
 
 export async function loadOnlineSongAudioSource(
@@ -170,6 +224,10 @@ export async function loadOnlineSongAudioSource(
         if (fromCopyOfAnyLevel) return fromCopyOfAnyLevel;
         const fromSources = prefersLxSources() ? null : await askLxSources(song, audioQuality);
         if (fromSources) return fromSources;
+        // Nothing anywhere for this song's own platform: the same song from another platform's
+        // source plays instead, where the listener left that switch on.
+        const fromAnotherSource = await switchToOtherLxSource(song, audioQuality);
+        if (fromAnotherSource) return fromAnotherSource;
         return { kind: 'unavailable' as const, failure };
     };
     const sleep = options.retry?.sleep ?? sleepBeforeRetry;

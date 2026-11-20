@@ -47,12 +47,22 @@ const LoginHost: React.FC<LoginHostProps> = ({ account }) => {
     const webLogin = useWebLoginAction(account, t);
 
     // host 每次去问都拿到这一次渲染的东西。
-    const live = useRef({ account, providers, reducedMotion });
-    live.current = { account, providers, reducedMotion };
+    const live = useRef({ account, providers, reducedMotion, webLogin });
+    live.current = { account, providers, reducedMotion, webLogin };
     const host = useMemo(() => createLoginHostState({
         rows: () => live.current.providers,
         login: () => live.current.account.getSnapshot().login,
-        startLogin: providerId => { void live.current.account.startLogin(providerId); },
+        // 登录从哪儿开始：iOS 壳里有原生桥、这一家又有官方网页登录页时，选平台就直接开官方网页登录页——
+        // 网页登录是首选入口，扫码 / 验证码只是备选（还能在窗口里另选登录方式改回去）。
+        // 没有桥（网页版 / 桌面版）或这一家没有网页登录页时，照旧走平台自己的扫码 / 浏览器登录。
+        startLogin: providerId => {
+            const web = live.current.webLogin;
+            if (web?.available && web.supported(providerId)) {
+                web.run(providerId);
+                return;
+            }
+            void live.current.account.startLogin(providerId);
+        },
         closeLogin: () => { live.current.account.closeLogin(); },
         hasLoginForm: providerId => omni.getLoginForm(providerId) !== null,
         submitForm: (providerId, values) => live.current.account.submitFormLogin(providerId, values),
