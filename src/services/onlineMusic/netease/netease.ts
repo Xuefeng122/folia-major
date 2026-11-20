@@ -6,6 +6,8 @@ import { withLoginRequestLimit } from '../login/loginRequestLimit';
 import { withOnlineRequestLimit } from '../failure/onlineRequestLimit';
 import { errorFields } from '../../../utils/errorText';
 import { readNeteaseApiBase } from '../platformApiBase';
+import { canUseNativeHttp } from './inapp/http';
+import { requestInAppEndpoint } from './inapp/routes';
 
 type UnavailableSongReplacement = {
   replacementSong: SongResult;
@@ -193,7 +195,54 @@ const eitherSignal = (caller: AbortSignal | null | undefined, limit: AbortSignal
 // local backend's port above is not counted. 'sign-in': one of the requests a sign-in waits for, with
 // the sign-in's limit; an HTTP error answer to it throws NeteaseLoginHttpError instead of being read as
 // an answer. 'online': a song's address or a collection's tracks, with the limit of online requests.
+
+// --- The in-app channel -------------------------------------------------------
+//
+// On the phone there is neither a local API server nor (usually) a configured API base, and both of the
+// routes below would fail before sending anything: the first throws NETEASE_API_BASE_MISSING, the second
+// has nothing to talk to. So when the app runs in a native shell with no API base filled in, the same
+// route names are answered inside the app instead: `inapp/routes.ts` maps each one to the request
+// NetEase's own client makes, `inapp/crypto.ts` encrypts it, and `inapp/http.ts` sends it through
+// CapacitorHttp so the session cookies in the answer can be kept. Nothing changes for the desktop app
+// or for a user who filled in an address — both keep their own path.
+const usesInAppChannel = async (): Promise<boolean> => {
+  if (isElectronRuntime()) return false;
+  if (API_BASE || getConfiguredApiBase()) return false;
+  return canUseNativeHttp();
+};
+
+const requestThroughInAppChannel = async (
+  endpoint: string,
+  options: RequestInit = {},
+  limit?: 'sign-in' | 'online',
+) => {
+  const target = endpoint.split('?')[0];
+  if (options.signal?.aborted) {
+    throw Object.assign(new Error(`NetEase API request ${target} was aborted`), { networkFailure: true });
+  }
+  const send = async () => {
+    try {
+      return await requestInAppEndpoint(endpoint);
+    } catch (error) {
+      // A route the in-app channel never mapped is this app's own gap, not a broken connection: it is
+      // reported as itself so the page shows its usual empty state instead of a network error.
+      if ((error as { code?: unknown } | null)?.code === 'NETEASE_INAPP_ROUTE_MISSING') throw error;
+      throw Object.assign(
+        new Error(`NetEase API request ${target} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error }),
+        { networkFailure: true },
+      );
+    }
+  };
+  if (limit === 'sign-in') return withLoginRequestLimit(() => send());
+  if (limit === 'online') return withOnlineRequestLimit(() => send(), NETEASE_ONLINE_REQUEST_LIMIT_MS);
+  return send();
+};
+
 const fetchWithCreds = async (endpoint: string, options: RequestInit = {}, limit?: 'sign-in' | 'online') => {
+  // Checked before the base is resolved: with no base to use, `getApiBase()` below would throw
+  // NETEASE_API_BASE_MISSING before anything was sent, which is exactly the phone's situation.
+  if (await usesInAppChannel()) return requestThroughInAppChannel(endpoint, options, limit);
+
   const base = await getApiBase();
   const url = `${base}${endpoint}`;
   // Ensure we send credentials to persist session (cookies)
