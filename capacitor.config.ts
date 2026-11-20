@@ -19,6 +19,11 @@ const config: CapacitorConfig = {
     backgroundColor: '#09090b',
   },
   plugins: {
+    // 音源脚本要直接访问各平台自己的域名，这些域名不回 CORS 预检，WebView 里的 fetch 会被拦下；
+    // 打开 CapacitorHttp 后请求走原生，脚本才能在 iOS 上真正取到播放地址。
+    CapacitorHttp: {
+      enabled: true,
+    },
     SplashScreen: {
       launchAutoHide: true,
       launchShowDuration: 600,

@@ -5,6 +5,7 @@ import type { PersonalFmRequestOptions, ProviderSongAvailability } from '../../.
 import { withLoginRequestLimit } from '../login/loginRequestLimit';
 import { withOnlineRequestLimit } from '../failure/onlineRequestLimit';
 import { errorFields } from '../../../utils/errorText';
+import { readNeteaseApiBase } from '../platformApiBase';
 
 type UnavailableSongReplacement = {
   replacementSong: SongResult;
@@ -28,6 +29,11 @@ const isElectronRuntime = () =>
   Boolean(getElectronBridge() && typeof getElectronBridge()?.getNeteasePort === 'function');
 
 const getConfiguredApiBase = () => {
+  const storedApiBase = readNeteaseApiBase();
+  if (storedApiBase) {
+    return storedApiBase;
+  }
+
   const viteEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
   if (viteEnv && typeof viteEnv.VITE_NETEASE_API_BASE === 'string' && viteEnv.VITE_NETEASE_API_BASE) {
     return viteEnv.VITE_NETEASE_API_BASE;
@@ -38,6 +44,11 @@ const getConfiguredApiBase = () => {
   }
 
   return null;
+};
+
+/** 设置里改了 API 地址之后把记下的地址清掉，下一次请求重新读。 */
+export const resetNeteaseApiBaseCache = (): void => {
+  API_BASE = null;
 };
 
 /** 网页版配置的远端 API 地址（自检与诊断报告用）；桌面版走内嵌后端，返回 null。 */

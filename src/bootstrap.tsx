@@ -19,6 +19,7 @@ import { isNavidromeEnabled } from './services/navidromeService';
 import { setNavidromeEnabledState } from './stores/useLibraryStore';
 import { installUiZoom } from './services/uiZoomRuntime';
 import { isMainAppSurface, isObsBrowserSourceSurface, isPerfCheckSurface, isRemoteControlSurface, obsSourceKind } from './utils/appSurface';
+import { ensureBuiltinLxSources } from './services/onlineMusic/lxSource/builtinSources';
 // 副作用 import：store 在模块加载时就把 `<html data-reduce-motion>` 写好并保持同步。放在 bootstrap
 // 而不是 App 里，是因为下面按 URL 挂的根不止 App —— 远程控制窗口的进度辉光也读这个属性。
 import './stores/useMotionSettingsStore';
@@ -102,6 +103,19 @@ if (isMainApp) installUiZoom();
 // 保存的歌词样式可以趁首屏加载遮罩还在时先准备（雾笺在后台编着色器，见 visualizer/prewarmVisualizers.ts）。
 // 不等它，和下面的 mod 加载一起跑；别的启动慢的样式等首屏出来、页面空闲时再准备（FirstScreenMounted）。
 if (isMainApp) prewarmSavedVisualizer();
+
+// 随包带的洛雪音源：手机上没有方便的文件选择，脚本在首次启动时自动导入（只导一次，之后以列表为准）。
+// 有几百 KB 到 1.8MB 的正文要写进本地库，所以放在页面空闲时做，不挡首屏。
+if (isMainApp) {
+    const importBuiltinSources = () => {
+        void ensureBuiltinLxSources().catch(error => {
+            console.warn('[LxSource] Built-in source import failed:', error);
+        });
+    };
+    const idle = (globalThis as { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number }).requestIdleCallback;
+    if (typeof idle === 'function') idle(importBuiltinSources, { timeout: 6000 });
+    else globalThis.setTimeout(importBuiltinSources, 2500);
+}
 
 const bootFolium = async () => {
     if (!isMainApp) return;

@@ -5,8 +5,10 @@ import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore'
 import { usePlayerChromeSettingsStore } from '../../../../stores/usePlayerChromeSettingsStore';
 import { useStageSettingsStore } from '../../../../stores/useStageSettingsStore';
 import { Button, CopyValue, Group, Reveal, Row, Status, Toggle, Value, type SettingsOptionDef } from '../kit';
+import LxSourceRows from './integration/LxSourceRows';
 import NavidromeRows from './integration/NavidromeRows';
-import { O, SERVICES, STREAMING } from './integration/options';
+import PlatformApiRows from './integration/PlatformApiRows';
+import { LX_SOURCE, O, SERVICES, STREAMING } from './integration/options';
 import { DesktopStageRows, WebStageRows } from './integration/StageModeRows';
 import SyncServerRows from './integration/SyncServerRows';
 import { useSettingsPage } from './settingsPageContext';
@@ -40,6 +42,7 @@ const IntegrationPage: React.FC = () => {
         <>
             <Group def={SERVICES}>
                 <NavidromeRows />
+                {!isElectron && <PlatformApiRows />}
                 <SyncServerRows />
                 {isElectron && (
                     <>
@@ -124,6 +127,9 @@ const IntegrationPage: React.FC = () => {
                     </>
                 )}
                 {isElectron ? <DesktopStageRows /> : <WebStageRows />}
+            </Group>
+            <Group def={LX_SOURCE}>
+                <LxSourceRows />
             </Group>
         </>
     );

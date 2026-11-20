@@ -7,6 +7,7 @@ import { option, type SettingsGroupDef } from '../../kit';
 
 export const SERVICES: SettingsGroupDef = { id: 'services', titleKey: 'options.settingsHeadingServices' };
 export const STREAMING: SettingsGroupDef = { id: 'streaming', titleKey: 'options.settingsHeadingStreaming' };
+export const LX_SOURCE: SettingsGroupDef = { id: 'lxSource', titleKey: 'options.settingsHeadingLxSource' };
 
 
 export const O = {
@@ -29,4 +30,12 @@ export const O = {
     playerCapPlayer: option(STREAMING, 'playerCapPlayer', 'options.playerCapPlayer'),
     playerCapTimeline: option(STREAMING, 'playerCapTimeline', 'options.playerCapTimeline'),
     playerCapIgnoreClear: option(STREAMING, 'playerCapIgnoreClear', 'options.playerCapIgnoreClear'),
+    apiBaseNetease: option(SERVICES, 'apiBaseNetease', 'options.apiBaseNetease'),
+    apiBaseQq: option(SERVICES, 'apiBaseQq', 'options.apiBaseQq'),
+    apiBaseKugou: option(SERVICES, 'apiBaseKugou', 'options.apiBaseKugou'),
+    apiBaseSave: option(SERVICES, 'apiBaseSave', 'options.apiBaseSave'),
+    lxSourceImport: option(LX_SOURCE, 'lxSourceImport', 'options.lxSourceImport'),
+    lxSourcePaste: option(LX_SOURCE, 'lxSourcePaste', 'options.lxSourcePaste'),
+    lxSourceList: option(LX_SOURCE, 'lxSourceList', 'options.lxSourceList'),
+    lxSourceReload: option(LX_SOURCE, 'lxSourceReload', 'options.lxSourceReload'),
 };

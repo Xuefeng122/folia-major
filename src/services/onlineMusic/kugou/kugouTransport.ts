@@ -3,6 +3,7 @@ import { OnlineProviderError } from '../../../types/onlineMusic';
 import { readProviderSessionValue, removeProviderSessionValue, writeProviderSessionValue } from '../providerStorage';
 import { lyricProxyWebUrl, requestLyricProxyOnDesktop } from '../../lyricProxy';
 import { withLoginRequestLimit } from '../login/loginRequestLimit';
+import { readKugouApiBase } from '../platformApiBase';
 
 // src/services/onlineMusic/kugou/kugouTransport.ts
 
@@ -63,6 +64,9 @@ const ENDPOINTS: Record<KugouOperation, string> = {
 };
 
 const getWebApiBase = (): string => {
+    const storedValue = readKugouApiBase();
+    if (storedValue) return storedValue;
+
     const viteValue = typeof import.meta !== 'undefined' && import.meta.env?.MODE !== 'test'
         ? String((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_KUGOU_API_BASE || '')
         : '';

@@ -19,6 +19,7 @@ import { isCachedSongAudioDistrusted } from './playbackRecovery/mediaCacheGuard'
 import { toPlayableAudioUrl } from '../utils/appPlaybackHelpers';
 import { getOnlineProviderIdForSong } from '../utils/appPlaybackGuards';
 import { getProviderSongMetadata } from './onlineMusic/songMetadata';
+import { resolveLxSourceUrl } from './onlineMusic/lxSource/lxSourcePlayback';
 import { useLyricSettingsStore } from '../stores/useLyricSettingsStore';
 import { useOnlineProviderAccountStore } from '../stores/useOnlineProviderAccountStore';
 import { saveLyricCacheSongMetadata } from './lyricExport/lyricCacheMetadata';
@@ -123,9 +124,23 @@ export async function loadOnlineSongAudioSource(
     }
 
     // No address: what went wrong is logged, also where a copy of another level then plays.
+    // Before the play gives up, the imported LX sources are asked for the song: a platform that
+    // hands out no address (a fee, a region, a removed track) often still has one there.
     const unavailable = async (failure: OnlineFailure, error?: unknown) => {
         logOnlineFailure(failure, error);
-        return await playCopyOfAnyLevel() ?? { kind: 'unavailable' as const, failure };
+        const fromCopyOfAnyLevel = await playCopyOfAnyLevel();
+        if (fromCopyOfAnyLevel) return fromCopyOfAnyLevel;
+        try {
+            const lxUrl = await resolveLxSourceUrl(song, audioQuality);
+            if (lxUrl) {
+                const replayGain = applyOnlineAudioSourceMetadata(song, undefined).replayGain;
+                updatePrefetchedAudioUrl(song, lxUrl, audioQuality, replayGain);
+                return { kind: 'ok' as const, audioSrc: lxUrl, replayGain, preview: false };
+            }
+        } catch (lxError) {
+            console.warn('[OnlinePlayback] An imported source could not be asked for the song', lxError);
+        }
+        return { kind: 'unavailable' as const, failure };
     };
     const sleep = options.retry?.sleep ?? sleepBeforeRetry;
     for (let attempt = 0; ; attempt += 1) {
