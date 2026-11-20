@@ -1,4 +1,4 @@
-name: iOS 未签名 ipa 构建
+﻿name: iOS 未签名 ipa 构建
 
 on:
   push:
@@ -65,6 +65,72 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:2 string UIInterfaceOrientationLandscapeLeft" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:3 string UIInterfaceOrientationLandscapeRight" "$PLIST" 2>/dev/null || true
           plutil -p "$PLIST"
+
+      - name: 首次启动用于「文件」App 的 Documents 目录
+        run: |
+          # UIFileSharingEnabled 只把 App 的 Documents 敞开给「文件」App；一个空的 Documents
+          # 是不会出现在「我的 iPhone」下的，所以必须真的建出目录。WebView 里建不了沙盒目录，
+          # 于是把创建放进 AppDelegate 的启动入口。
+          python3 - <<'PY'
+          import pathlib, re, textwrap
+
+          path = pathlib.Path('ios/App/App/AppDelegate.swift')
+          source = path.read_text(encoding='utf-8')
+
+          call = 'FoliaDocuments.create()'
+          launch = textwrap.dedent('''
+              func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+                  FoliaDocuments.create()
+                  return true
+              }
+          ''').strip('\n')
+
+          entry = re.search(
+              r'func application\(_ application: UIApplication,\s*didFinishLaunchingWithOptions[^{]*\{',
+              source,
+          )
+          if entry:
+              if call not in source:
+                  source = source[:entry.end()] + '\n        ' + call + source[entry.end():]
+          else:
+              # 模板没有启动方法时自己写一个：签名一致，UIKit 照样会调它。
+              anchor = re.search(r'class AppDelegate[^{]*\{', source)
+              if not anchor:
+                  raise SystemExit('AppDelegate.swift: the AppDelegate class was not found')
+              block = '\n' + textwrap.indent(launch, '    ') + '\n'
+              source = source[:anchor.end()] + block + source[anchor.end():]
+
+          helper = textwrap.dedent('''
+              /// Creates the folders the「文件」App shows under this app. An app whose Documents is
+              /// empty is hidden there, so these are made on every launch: reinstalling the app wipes
+              /// the container and they come back with the first start.
+              enum FoliaDocuments {
+                  static func create() {
+                      let manager = FileManager.default
+                      guard let documents = manager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+                      for name in ["Music", "Lyrics", "Mods", "Cache"] {
+                          let folder = documents.appendingPathComponent(name, isDirectory: true)
+                          var isFolder: ObjCBool = false
+                          if manager.fileExists(atPath: folder.path, isDirectory: &isFolder), isFolder.boolValue { continue }
+                          try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
+                      }
+                  }
+              }
+          ''').strip('\n')
+          if 'enum FoliaDocuments' not in source:
+              source = source.rstrip() + '\n\n' + helper + '\n'
+
+          path.write_text(source, encoding='utf-8')
+          print(source)
+          PY
+          grep -q 'FoliaDocuments.create()' ios/App/App/AppDelegate.swift
+          grep -q 'enum FoliaDocuments' ios/App/App/AppDelegate.swift
+
+      - name: 校验文件访问相关 plist 项
+        run: |
+          PLIST=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$PLIST" | grep -qi true
+          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$PLIST" | grep -qi true
 
       - name: xcodebuild（无签名 Release）
         run: |

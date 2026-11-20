@@ -20,6 +20,8 @@ import { toPlayableAudioUrl } from '../utils/appPlaybackHelpers';
 import { getOnlineProviderIdForSong } from '../utils/appPlaybackGuards';
 import { getProviderSongMetadata } from './onlineMusic/songMetadata';
 import { resolveLxSourceUrl } from './onlineMusic/lxSource/lxSourcePlayback';
+import { enabledLxSources } from './onlineMusic/lxSource/lxSourceStore';
+import { isNativeShell } from '../mods/web/platform';
 import { useLyricSettingsStore } from '../stores/useLyricSettingsStore';
 import { useOnlineProviderAccountStore } from '../stores/useOnlineProviderAccountStore';
 import { saveLyricCacheSongMetadata } from './lyricExport/lyricCacheMetadata';
@@ -49,6 +51,29 @@ export interface LoadOnlineAudioSourceOptions {
 const sleepBeforeRetry = (ms: number): Promise<void> => new Promise(resolve => {
     globalThis.setTimeout(resolve, ms);
 });
+
+/** true in the container with at least one LX source switched on: the sources are then asked first. */
+const prefersLxSources = (): boolean => isNativeShell() && enabledLxSources().length > 0;
+
+/**
+ * Asks the enabled LX sources for a play address and shapes an answer the play can take.
+ * Answers null where none of them had one, so the caller falls back to the platform.
+ */
+const askLxSources = async (
+    song: SongResult,
+    audioQuality: AudioQualityPreference,
+): Promise<{ kind: 'ok'; audioSrc: string; replayGain?: ReplayGainInfo; preview: boolean } | null> => {
+    try {
+        const url = await resolveLxSourceUrl(song, audioQuality);
+        if (!url) return null;
+        const replayGain = applyOnlineAudioSourceMetadata(song, undefined).replayGain;
+        updatePrefetchedAudioUrl(song, url, audioQuality, replayGain);
+        return { kind: 'ok' as const, audioSrc: url, replayGain, preview: false };
+    } catch (error) {
+        console.warn('[OnlinePlayback] An imported source could not be asked for the song', error);
+        return null;
+    }
+};
 
 export async function loadOnlineSongAudioSource(
     song: SongResult,
@@ -114,6 +139,17 @@ export async function loadOnlineSongAudioSource(
     const fromCopy = await playCopy(await readCopy(level));
     if (fromCopy) return fromCopy;
 
+    // In the iOS/Android container the imported LX sources are asked first, before the platform:
+    // a platform address handed to a WebView is often a preview clip or refused outright (region,
+    // fee, a hotlink check that reads the request as coming from nowhere), so the platform first
+    // made a device play the wrong thing while a source that had the song was never asked. The
+    // desktop keeps the order it has (platform first, sources as the fallback): there the platform
+    // address plays, and the sources are the safety net.
+    if (prefersLxSources()) {
+        const lxUrl = await askLxSources(song, audioQuality);
+        if (lxUrl) return lxUrl;
+    }
+
     if (prefetched?.audioUrl && prefetched.audioUrl !== 'CACHED_IN_DB' && isUrlValid(prefetched.audioUrlFetchedAt)) {
         return {
             kind: 'ok',
@@ -125,21 +161,15 @@ export async function loadOnlineSongAudioSource(
 
     // No address: what went wrong is logged, also where a copy of another level then plays.
     // Before the play gives up, the imported LX sources are asked for the song: a platform that
-    // hands out no address (a fee, a region, a removed track) often still has one there.
+    // hands out no address (a fee, a region, a removed track) often still has one there. In the
+    // container they were already asked before the platform (prefersLxSources), and asking again
+    // straight after would only repeat an answer that just came back empty.
     const unavailable = async (failure: OnlineFailure, error?: unknown) => {
         logOnlineFailure(failure, error);
         const fromCopyOfAnyLevel = await playCopyOfAnyLevel();
         if (fromCopyOfAnyLevel) return fromCopyOfAnyLevel;
-        try {
-            const lxUrl = await resolveLxSourceUrl(song, audioQuality);
-            if (lxUrl) {
-                const replayGain = applyOnlineAudioSourceMetadata(song, undefined).replayGain;
-                updatePrefetchedAudioUrl(song, lxUrl, audioQuality, replayGain);
-                return { kind: 'ok' as const, audioSrc: lxUrl, replayGain, preview: false };
-            }
-        } catch (lxError) {
-            console.warn('[OnlinePlayback] An imported source could not be asked for the song', lxError);
-        }
+        const fromSources = prefersLxSources() ? null : await askLxSources(song, audioQuality);
+        if (fromSources) return fromSources;
         return { kind: 'unavailable' as const, failure };
     };
     const sleep = options.retry?.sleep ?? sleepBeforeRetry;

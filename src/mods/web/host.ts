@@ -627,9 +627,14 @@ const createHost = (): WebModsHost => {
 };
 
 /**
- * Installs the bridge at window.electron.mods, and turns the mod system on by default: on iOS this
+ * Installs the bridge at window.__foliaWebMods, and turns the mod system on by default: on iOS this
  * host is the only mod system there is, so asking the user to switch on a feature they cannot reach
  * on the desktop would only hide the market.
+ *
+ * The bridge deliberately does NOT go to `window.electron`: that object is the desktop preload's
+ * namespace, and the rest of the app calls into it as `window.electron?.method()`, a guard that
+ * only short-circuits when the whole object is missing. A `{ mods }`-only object there made the
+ * first render throw (black screen on device). src/mods/ipc.ts reads both places.
  */
 export const installWebModsHost = (): WebModsHost | null => {
     if (!isNativeShell() || hasDesktopModsBridge()) {
@@ -639,8 +644,7 @@ export const installWebModsHost = (): WebModsHost | null => {
         return host;
     }
     const created = createHost();
-    const electron = ((window as { electron?: Record<string, unknown> }).electron ??= {});
-    electron.mods = created.bridge;
+    (globalThis as { __foliaWebMods?: unknown }).__foliaWebMods = created.bridge;
     host = created;
     try {
         if (localStorage.getItem('mod_system_enabled') === null) {

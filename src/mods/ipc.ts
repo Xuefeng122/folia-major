@@ -18,9 +18,23 @@ import type {
 // degrades to a safe fallback on the web build so the panel stays renderable
 // even when no Electron bridge exists (the UI then shows a desktop-only hint).
 
-const bridge = (): NonNullable<typeof window.electron>['mods'] => window.electron?.mods;
+type ModsBridge = NonNullable<typeof window.electron>['mods'];
 
-export const isModsBridgeAvailable = (): boolean => Boolean(window.electron?.mods);
+/**
+ * The mods bridge of a Capacitor build (src/mods/web/host.ts).
+ *
+ * It lives in its own global and NOT under `window.electron`. `window.electron` is the desktop
+ * preload's namespace: a lot of the app asks it for window-chrome and playback methods with a
+ * single `window.electron?.method()` guard, which only tolerates the whole object being absent.
+ * Putting a bare `{ mods }` there made those guards call undefined and threw during the first
+ * render — the black screen the iOS build shipped with.
+ */
+const webBridge = (): ModsBridge | undefined =>
+    (globalThis as { __foliaWebMods?: ModsBridge }).__foliaWebMods;
+
+const bridge = (): ModsBridge | undefined => window.electron?.mods ?? webBridge();
+
+export const isModsBridgeAvailable = (): boolean => Boolean(bridge());
 
 const EMPTY_PAYLOAD: ModsListPayload = {
     mods: [],
