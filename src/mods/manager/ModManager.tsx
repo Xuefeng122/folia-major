@@ -11,6 +11,8 @@ import { openOutsideLink, opensThroughDesktopApp } from '../../utils/system/outs
 import { ModListItem, translateModError } from './ModListItem';
 import { useModCosts } from './modCost';
 import type { ModManagerClasses } from './modManagerClasses';
+import { ModMarket } from '../web/ModMarket';
+import { webModsHost } from '../web/host';
 
 // src/mods/manager/ModManager.tsx
 // The mod list and everything that acts on it: toolbar, zip drop install, batch selection, ffmpeg
@@ -192,6 +194,17 @@ export const ModManager: React.FC<ModManagerProps> = ({ classes, isDaylight, the
     );
 
     if (!bridgeAvailable) {
+        // 手机上没有主进程，桥由页面自己补（src/mods/web/host.ts），store 里那次一次性探测的结果
+        // 不能代表它，所以这里看的是桥**现在**在不在。
+        if (webModsHost()) {
+            return (
+                <ModMarket
+                    classes={classes}
+                    isDaylight={isDaylight}
+                    themeAccent={theme?.accentColor ?? null}
+                />
+            );
+        }
         return (
             <div className={`rounded-xl border px-4 py-8 flex flex-col items-center gap-2 text-center ${classes.card}`} style={{ color: 'var(--text-secondary)' }}>
                 <Boxes size={26} className="opacity-60" />

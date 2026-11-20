@@ -12,6 +12,7 @@ import { initializeLocalCoverRuntime } from './services/localCoverRuntime';
 import { installFoliumHomePageDismissal } from './components/app/home/foliumHomePageDismissal';
 import { installLibrarySuiteChromeCommands } from './library/app/installLibrarySuiteChromeCommands';
 import { noteFoliumFirstScreenMounted, startFoliumForMainWindow } from './mods/runtime/mainWindowStart';
+import { installWebModsHost } from './mods/web/host';
 import { installNativeDragGuard } from './utils/nativeDragGuard';
 import { prewarmSavedVisualizer, prewarmVisualizersWhenIdle } from './components/visualizer/prewarmVisualizers';
 import { bootNavidromeServerPreset } from './services/navidromeServerPreset';
@@ -119,6 +120,9 @@ if (isMainApp) {
 
 const bootFolium = async () => {
     if (!isMainApp) return;
+    // 手机端（Capacitor）没有主进程，模组桥由页面自己补（src/mods/web/host.ts）。必须在读模组清单
+    // 之前装上，否则上次装过的模组这次开机不会回来。桌面端这里直接返回 null，什么都不做。
+    installWebModsHost();
     // 显式打开集合时关掉开着的模组首页页面；与 Home 挂没挂着无关，所以在这里装（见 foliumHomePageDismissal）。
     installFoliumHomePageDismissal();
     await startFoliumForMainWindow({ firstScreenWaitMs: FIRST_SCREEN_MOD_WAIT_MS });
