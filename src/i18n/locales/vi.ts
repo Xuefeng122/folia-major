@@ -2226,6 +2226,8 @@ export default {
     "communityQq": "Nhóm hỗ trợ QQ",
     "communityQqHint": "{{number}} · nhấp để sao chép",
     "qqGroupNumberCopied": "Đã sao chép số nhóm",
+    "contactAuthorQq": "Contact the author · QQ (add me with note {{note}})",
+    "contactAuthorWechat": "Contact the author · WeChat (add me with note {{note}})",
     "releaseNotes": "Có gì mới",
     "releaseNotesDescription": "Xem các thay đổi trong phiên bản này",
     "majorUpdateLabel": "Cập nhật {{codename}} · Bản cập nhật lớn",

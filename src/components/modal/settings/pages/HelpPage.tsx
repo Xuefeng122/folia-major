@@ -1,11 +1,12 @@
 import React from 'react';
-import { ChevronRight, CircleHelp, ExternalLink, Lightbulb, MessageCircle, Sparkles, Users, type LucideIcon } from 'lucide-react';
+import { ChevronRight, CircleHelp, ExternalLink, Lightbulb, MessageCircle, Smartphone, Sparkles, UserRound, Users, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openPonderNavigation } from '../../../../services/ponder/pagePonderTarget';
 import { BUILD_KIND_TAGS, getBuildKind } from '../../../../utils/buildProvenance';
 import { PRIMARY_MODIFIER_LABEL } from '../../../../utils/platform';
 import { openDiscordInvite } from '../../../shared/discordCommunity';
 import { QQ_COMMUNITY_GROUP_NUMBER } from '../../../shared/qqCommunity';
+import { FOLIA_CONTACT_NOTE, FOLIA_CONTACT_QQ, FOLIA_CONTACT_WECHAT } from '../../../shared/foliaContact';
 import { HELP_TAB_PLAYER_CONTROLS, HELP_TAB_PRIMARY_SHORTCUTS } from '../../userGuideContent';
 import { Button, CopyButton, CopyValue, Group, Keys, Row, type SettingsGroupDef } from '../kit';
 import { openOutsideLink } from '../../../../utils/system/outsideLink';
@@ -144,6 +145,13 @@ const HelpPage: React.FC<HelpPageProps> = ({ onOpenReleaseNotes, onOpenAiHelp, o
             </div>
 
             <Group def={SUPPORT} bare>
+                {/* 分发者的联系方式排在最前：插件、安装包的事都找这两个号，加好友要带备注。 */}
+                <Row label={iconLabel(UserRound, t('help.contactAuthorQq', { note: FOLIA_CONTACT_NOTE }))}>
+                    <CopyValue value={FOLIA_CONTACT_QQ} />
+                </Row>
+                <Row label={iconLabel(Smartphone, t('help.contactAuthorWechat', { note: FOLIA_CONTACT_NOTE }))}>
+                    <CopyValue value={FOLIA_CONTACT_WECHAT} />
+                </Row>
                 <Row label={iconLabel(CircleHelp, t('aiHelp.openButton'))} onClick={onOpenAiHelp} />
                 <Row label={iconLabel(MessageCircle, t('help.joinDiscord'))} onClick={openDiscordInvite} />
                 {/* A QQ group has no link that opens it: the row gives its number to copy. */}

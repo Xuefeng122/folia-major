@@ -2226,6 +2226,8 @@ export default {
     "communityQq": "Grup bantuan mandiri QQ",
     "communityQqHint": "{{number}} · klik untuk menyalin",
     "qqGroupNumberCopied": "Nomor grup disalin",
+    "contactAuthorQq": "Contact the author · QQ (add me with note {{note}})",
+    "contactAuthorWechat": "Contact the author · WeChat (add me with note {{note}})",
     "releaseNotes": "Yang baru",
     "releaseNotesDescription": "Lihat perubahan pada versi ini",
     "majorUpdateLabel": "{{codename}} Update · Pembaruan besar",

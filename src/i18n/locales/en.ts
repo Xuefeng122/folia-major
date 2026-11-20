@@ -2226,6 +2226,8 @@ export default {
     "communityQq": "QQ self-help group",
     "communityQqHint": "{{number}} · click to copy",
     "qqGroupNumberCopied": "Group number copied",
+    "contactAuthorQq": "Contact the author · QQ (add me with note {{note}})",
+    "contactAuthorWechat": "Contact the author · WeChat (add me with note {{note}})",
     "releaseNotes": "What's new",
     "releaseNotesDescription": "Review the changes in this version",
     "majorUpdateLabel": "{{codename}} Update · Major update",

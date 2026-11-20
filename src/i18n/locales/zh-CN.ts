@@ -2226,6 +2226,8 @@ export default {
     "communityQq": "QQ 自助交流群",
     "communityQqHint": "{{number}} · 点击复制群号",
     "qqGroupNumberCopied": "群号已复制",
+    "contactAuthorQq": "联系作者 · QQ（加好友备注 {{note}}）",
+    "contactAuthorWechat": "联系作者 · 微信（加好友备注 {{note}}）",
     "releaseNotes": "版本更新",
     "releaseNotesDescription": "查看这个版本带来的变化",
     "majorUpdateLabel": "{{codename}} Update · 重大更新",
