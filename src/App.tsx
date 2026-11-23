@@ -8,6 +8,10 @@ import CommandPalette from './components/command-palette/CommandPalette';
 import AddToPlaylistHost from './components/app/AddToPlaylistHost';
 import ScratchpadHost from './components/app/scratchpad/ScratchpadHost';
 import { useScratchpadPlayback, useScratchpadQueuePort } from './components/app/scratchpad/useScratchpadPlayback';
+import { describeAudioSource, usePlayableAudioSources } from './services/playbackRecovery/usePlayableAudioSources';
+import { isHoldingAudioAddress } from './services/playbackRecovery/nativeAudioProxy';
+import { isFlacAddress, isIosQualityCapOn } from './services/onlineMusic/quality/iosCompatQuality';
+import { isIosNativePlatform } from './services/onlineMusic/webLogin/nativeLoginBridge';
 import { useCommandPalette } from './components/command-palette/useCommandPalette';
 import { useCommandPaletteContext } from './hooks/useCommandPaletteContext';
 import { useReducedMotionFor } from './hooks/useReducedMotionFor';
@@ -2464,15 +2468,39 @@ export default function App() {
     // On the HiFi route mpv plays the song: no deck gets a source (resolveDeckSrc would hand the
     // active one a warmed source), and every handler below does nothing, so a deck that still
     // fires an event (its pause on the way out) never drives the HiFi song.
+    // The address each deck is about to be given, taken through the one door every element source
+    // goes through in the phone container: a remote address is fetched through the native bridge and
+    // handed over as a blob, and the element is given nothing until those bytes are in hand. The
+    // device log had not one [AudioProxy] line, because this - the deck resolver - is the path that
+    // was actually feeding the elements, not the online-source chain. See usePlayableAudioSources.
+    const playableDeckSrc = usePlayableAudioSources([automix.deckSrc('A'), automix.deckSrc('B')]);
     const renderAudioDeck = (deck: AutomixDeckId, register: (element: HTMLAudioElement | null) => void) => (
         <audio
             key={deck}
             ref={register}
             data-playback-deck={deck}
-            src={playbackRoute === 'hifi' ? undefined : automix.deckSrc(deck)}
+            src={playbackRoute === 'hifi' ? undefined : playableDeckSrc(automix.deckSrc(deck))}
             preload="auto"
             crossOrigin="anonymous"
             loop={effectiveLoopMode === 'one' && automix.activeDeck === deck}
+            // The element's own account of the load, so the next device log says where a track that
+            // never sounds actually stopped: `canplay` means the bytes decode, `waiting` / `stalled`
+            // a load that goes nowhere, and `error` the container refusing the file outright.
+            onCanPlay={(e) => {
+                console.log(`[Audio] canplay deck=${deck} src=${describeAudioSource(e.currentTarget.currentSrc)} readyState=${e.currentTarget.readyState}`);
+            }}
+            onWaiting={(e) => {
+                console.log(`[Audio] waiting deck=${deck} src=${describeAudioSource(e.currentTarget.currentSrc)} readyState=${e.currentTarget.readyState} networkState=${e.currentTarget.networkState} at ${e.currentTarget.currentTime.toFixed(2)}s`);
+            }}
+            onStalled={(e) => {
+                console.warn(`[Audio] stalled deck=${deck} src=${describeAudioSource(e.currentTarget.currentSrc)} readyState=${e.currentTarget.readyState} networkState=${e.currentTarget.networkState} at ${e.currentTarget.currentTime.toFixed(2)}s`);
+            }}
+            onAbort={(e) => {
+                // WebKit aborts a load it decided it cannot use and never fires `error` for it: the
+                // flac container on the last build showed up as exactly this, a source that neither
+                // played nor failed.
+                console.warn(`[Audio] abort deck=${deck} src=${describeAudioSource(e.currentTarget.currentSrc)} networkState=${e.currentTarget.networkState}`);
+            }}
             onLoadStart={(e) => {
                 // Silent unless the invariant breaks. A deck is only ever handed the source the
                 // app is currently on, so the active deck loading anything else means the ref and
@@ -2490,7 +2518,9 @@ export default function App() {
                 // a drift. The state this watches for is the opposite one - a source we are on
                 // that some deck never picked up.
                 if (automix.isTransitionAudible() || !audioSrc) return;
-                if (automix.isActiveDeck(e.currentTarget) && e.currentTarget.getAttribute('src') !== audioSrc) {
+                // The deck's `src` is the blob the proxy fetched in the phone container, so the test
+                // is "does this deck hold this song", not "are the two strings equal".
+                if (automix.isActiveDeck(e.currentTarget) && !isHoldingAudioAddress(e.currentTarget.getAttribute('src'), audioSrc)) {
                     console.error('[Audio] the active deck is loading something other than the current source', {
                         deck,
                         loading: e.currentTarget.getAttribute('src')?.slice(-40) ?? null,
@@ -2676,6 +2706,8 @@ export default function App() {
                 currentTime.set(0); // Ensure currentTime is reset when new audio loads
             }}
             onError={(e) => {
+                const failingElement = e.currentTarget;
+                console.error(`[Audio] error deck=${deck} proxied=${failingElement.currentSrc.startsWith('blob:') ? 'blob' : 'address'} held=${isHoldingAudioAddress(failingElement.getAttribute('src'), audioSrc) ? 'yes' : 'no'} src=${describeAudioSource(failingElement.currentSrc)} code=${failingElement.error?.code ?? 'none'} message=${failingElement.error?.message || 'none'} networkState=${failingElement.networkState}`);
                 if (isHifiRoute()) return;
                 const audioElement = e.currentTarget;
                 const isActiveDeck = automix.isActiveDeck(audioElement);
@@ -2728,6 +2760,21 @@ export default function App() {
                 }
 
                 const failedSrc = audioElement.currentSrc || audioSrc;
+                // A flac file in the iOS container is a format WKWebView's <audio> cannot decode, and it
+                // fails without ever telling a code that says so. Say it plainly instead of spending the
+                // address refresh on a file that will fail the same way: the switch that fixes it is one
+                // press away, and the label of the quality says what happened.
+                if (isIosNativePlatform() && isFlacAddress(failedSrc)) {
+                    console.warn(`[Audio] flac source refused in the iOS container: ${describeAudioSource(failedSrc)}`);
+                    setStatusMsg({
+                        type: 'error',
+                        text: isIosQualityCapOn()
+                            ? t('account.iosFlacUnsupported')
+                            : t('account.iosFlacUnsupportedCapped'),
+                        nonce: Date.now(),
+                    });
+                }
+
                 // Online sources (cached blobs included) refresh once and report a structured reason.
                 if (currentSong && failedSrc && !isLocalPlaybackSong(currentSong) && !isNavidromePlaybackSong(currentSong) && !isStagePlaybackSong(currentSong)) {
                     void handleOnlineMediaFailure({

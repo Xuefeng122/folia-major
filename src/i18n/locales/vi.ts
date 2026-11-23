@@ -1684,6 +1684,10 @@ export default {
     "qualityUltra": "Siêu cao",
     "qualityLossless": "Lossless",
     "qualityHires": "Hi-Res",
+    "iosCompatQuality": "Ưu tiên chất lượng tương thích iOS",
+    "iosCompatQualityNote": "Phát 320k (mp3) trên iOS; lossless / Hi-Res không giải mã được ở đây",
+    "iosFlacUnsupported": "Chất lượng này (flac) không giải mã được trên iOS; đã chuyển sang mức tương thích, hãy thử lại",
+    "iosFlacUnsupportedCapped": "Chất lượng này không giải mã được ở đây; hãy bật “Ưu tiên chất lượng tương thích iOS” trong cài đặt",
     "vipOnly": "Chỉ VIP"
   },
   "playlist": {

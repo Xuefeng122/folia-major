@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { MutableRefObject, RefObject } from 'react';
 import { PlayerState } from '../../../../types';
 import type { ReplayGainInfo, ReplayGainMode, SongResult, StatusMessage } from '../../../../types';
@@ -18,6 +18,7 @@ import { onPlayWrapped } from '../../../../services/volumeBalance/balanceMeter';
 import { createBalancePlay } from '../../../../services/volumeBalance/balancePlay';
 import { onBalanceRecord } from '../../../../services/volumeBalance/balanceRecords';
 import { setStatusMessage as setStatusMsg } from '../../../../stores/useStatusMessageStore';
+import { getAudioProxyTick, isHoldingAudioAddress, subscribeAudioProxy } from '../../../../services/playbackRecovery/nativeAudioProxy';
 import { useAudioSettingsStore } from '../../../../stores/useAudioSettingsStore';
 import { setPlayerState, setReplayGainAppliedDb, setReplayGainEstimated } from '../../../../stores/usePlaybackStore';
 import { useTranslation } from 'react-i18next';
@@ -329,6 +330,11 @@ export function usePlaybackAudioBridge({
         previousAudioSrcRef.current = audioSrc;
     }, [audioRef, audioSrc]);
 
+    // Bumped whenever the proxy finished (or gave up on) fetching the bytes for an address. It is a
+    // dependency of the play effect below so that a deck waiting on a blob is pressed to play the
+    // moment the blob arrives, with the autoplay intent still unspent.
+    const audioProxyTick = useSyncExternalStore(subscribeAudioProxy, getAudioProxyTick, () => 0);
+
     useEffect(() => {
         if (audioSrc && audioRef.current) {
             // `audioRef` and `audioSrc` describe the same track almost always - but not while a
@@ -342,7 +348,12 @@ export function usePlaybackAudioBridge({
             // The deck's own src attribute is written from `audioSrc`, so an exact match is the
             // whole test. Bail WITHOUT spending the intent - this effect runs again on the commit
             // that gives the deck its real source, and that run is the one meant to start it.
-            if (audioRef.current.getAttribute('src') !== audioSrc) return;
+            // The deck's `src` is not always `audioSrc` itself: in the phone container the element is
+            // handed the blob the proxy fetched for that address, so "equal" has to mean "this deck
+            // holds this song", not "the two strings match". Comparing the strings alone made every
+            // play in the shell bail here for ever - the element had a blob, the app was on an http
+            // address, and nothing ever pressed play.
+            if (!isHoldingAudioAddress(audioRef.current.getAttribute('src'), audioSrc)) return;
 
             // The deck has already failed on this exact source and something else - the transcode
             // fallback - is off resolving it. play() on an element in error state cannot start
@@ -413,7 +424,7 @@ export function usePlaybackAudioBridge({
                 }
             }
         }
-    }, [audioRef, audioSrc, getTargetPlaybackVolume, isAutoplayHeld, isLyricsLoading, setPlayerState, setStatusMsg, setupAudioAnalyzer, shouldAutoPlayRef, suppressAutoplayRef, syncOutputGain, t]);
+    }, [audioRef, audioSrc, audioProxyTick, getTargetPlaybackVolume, isAutoplayHeld, isLyricsLoading, setPlayerState, setStatusMsg, setupAudioAnalyzer, shouldAutoPlayRef, suppressAutoplayRef, syncOutputGain, t]);
 
     // Tells this bridge that the active deck ALREADY holds `src` and is sounding it, so the next time
     // `audioSrc` settles on that value the reload effect above treats it as a no-op instead of calling

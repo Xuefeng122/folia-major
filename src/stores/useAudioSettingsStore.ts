@@ -58,6 +58,13 @@ export const AUTO_SKIP_UNPLAYABLE_KEY = 'folia_auto_skip_unplayable';
 export const SHUFFLE_ROUND_NO_REPEAT_KEY = 'folia_shuffle_round_no_repeat';
 
 /**
+ * 「iOS 兼容音质优先」：iOS 壳里 WKWebView 的 <audio> 解不了 flac 容器，无损 / Hi-Res 的设置会换来一个
+ * 永远转圈、也不报错的播放。开着时 iOS 壳内把音质封顶到 320k（mp3 优先），桌面 / 网页 / 安卓不受影响。
+ * 默认开：关掉它意味着听 flac，而那在 iOS 上就是放不出声。
+ */
+export const IOS_COMPAT_QUALITY_KEY = 'folia_ios_compat_quality';
+
+/**
  * Folium 1.7: the equalizer curve a mod put in place over the listener's own sound (utils/audioEqualizerModCurve.ts),
  * removed when the listener's own sound plays again. audio_equalizer_settings never holds it.
  */
@@ -202,6 +209,8 @@ const readStoredVolume = () => {
 
 export type AudioSettingsState = {
     audioQuality: AudioQuality;
+    /** The iOS shell caps the level at 320k/mp3 unless this is off (see IOS_COMPAT_QUALITY_KEY). */
+    iosCompatQuality: boolean;
     enableMediaCache: boolean;
     /** Gigabytes of cached audio to keep before the oldest is dropped. Zero means no ceiling. */
     mediaCacheLimitGb: number;
@@ -235,6 +244,7 @@ export type AudioSettingsState = {
     isMuted: boolean;
     loopMode: 'off' | 'all' | 'one';
     setAudioQuality: (quality: AudioQuality) => void;
+    handleToggleIosCompatQuality: (enable: boolean) => void;
     handleToggleMediaCache: (enable: boolean) => void;
     handleSetMediaCacheLimitGb: (gigabytes: number) => void;
     handleSetQueueAddBehavior: (behavior: QueueAddBehavior) => void;
@@ -320,6 +330,7 @@ const initialAudioEqualizerSettings = readStoredAudioEqualizerSettings();
 
 export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
     audioQuality: readStoredAudioQuality(),
+    iosCompatQuality: getStoredBoolean(IOS_COMPAT_QUALITY_KEY, true),
     enableMediaCache: readStoredEnableMediaCache(),
     mediaCacheLimitGb: readStoredMediaCacheLimitGb(),
     queueAddBehavior: readStoredQueueAddBehavior(),
@@ -348,6 +359,11 @@ export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
             localStorage.setItem('default_audio_quality', quality);
         }
         set({ audioQuality: quality });
+    },
+    handleToggleIosCompatQuality: (enable) => {
+        setStoredBoolean(IOS_COMPAT_QUALITY_KEY, enable);
+        set({ iosCompatQuality: enable });
+        console.log(`[AudioQuality] iOS compatibility cap ${enable ? 'on' : 'off'}`);
     },
     handleToggleMediaCache: (enable) => {
         setStoredBoolean(ENABLE_MEDIA_CACHE_KEY, enable);
@@ -519,6 +535,7 @@ export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
  */
 export const selectAudioSettingsSnapshot = (state: AudioSettingsState) => ({
     audioQuality: state.audioQuality,
+    iosCompatQuality: state.iosCompatQuality,
     enableMediaCache: state.enableMediaCache,
     mediaCacheLimitGb: state.mediaCacheLimitGb,
     queueAddBehavior: state.queueAddBehavior,

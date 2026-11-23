@@ -136,7 +136,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             busy: webLogin.busy,
             disabled: webLogin.busy,
             onClick: () => webLogin.run(providerId),
-        }]
+        }, ...(webLogin.pasteAvailable ? [{
+            // 原生登录页万一建不起来，这一条还在：系统浏览器里登录，把 Cookie 粘回来。
+            label: t('login.webLoginPaste'),
+            onClick: () => setPasteOpen(true),
+        }] : [])]
         : [];
 
     let headline: string;
@@ -258,6 +262,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     const sceneKey = `${providerId}:${scene}:${failure?.case.id ?? ''}:${failure?.at ?? ''}`;
     const [detailsOpen, setDetailsOpen] = useState(false);
     useEffect(() => setDetailsOpen(false), [sceneKey]);
+    // 粘贴 Cookie 的那一格：只在按了退路按钮之后铺开，换一幅/换平台就收掉。
+    const [pasteOpen, setPasteOpen] = useState(false);
+    const [pasteText, setPasteText] = useState('');
+    useEffect(() => {
+        setPasteOpen(false);
+        setPasteText('');
+    }, [sceneKey]);
 
     return (
         <>
@@ -324,7 +335,54 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                         steps={stepMarks(scene, inBrowser, login?.checksAfterLogin ?? false)}
                     />
                 )}
-            below={details ? <Unfold open={detailsOpen}>{details}</Unfold> : checklist}
+            below={pasteOpen && providerId && webLogin
+                ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '4px 2px 2px' }}>
+                        <span style={{ fontSize: '12px', opacity: 0.7, lineHeight: 1.5 }}>{t('login.webLoginPasteHint')}</span>
+                        <textarea
+                            value={pasteText}
+                            onChange={event => setPasteText(event.target.value)}
+                            placeholder="MUSIC_U=...; __csrf=..."
+                            spellCheck={false}
+                            rows={3}
+                            style={{
+                                width: '100%',
+                                resize: 'vertical',
+                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                                fontSize: '12px',
+                                lineHeight: 1.45,
+                                padding: '8px 10px',
+                                borderRadius: '10px',
+                                border: '1px solid rgba(127, 127, 127, 0.35)',
+                                background: 'rgba(127, 127, 127, 0.08)',
+                                color: 'inherit',
+                            }}
+                        />
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                                type="button"
+                                disabled={webLogin.busy || !pasteText.trim()}
+                                onClick={() => {
+                                    const text = pasteText;
+                                    setPasteOpen(false);
+                                    setPasteText('');
+                                    webLogin.runPasted(providerId, text);
+                                }}
+                                style={{ flex: 1, padding: '8px 12px', borderRadius: '10px', border: 'none', fontWeight: 600, cursor: 'pointer' }}
+                            >
+                                {t('login.webLoginPasteSubmit')}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setPasteOpen(false); setPasteText(''); }}
+                                style={{ flex: 1, padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(127, 127, 127, 0.35)', background: 'transparent', color: 'inherit', cursor: 'pointer' }}
+                            >
+                                {t('login.webLoginPasteCancel')}
+                            </button>
+                        </div>
+                    </div>
+                )
+                : details ? <Unfold open={detailsOpen}>{details}</Unfold> : checklist}
         />
         {shownDone && providerId && <LoginDoneFlight parts={doneParts} providerId={providerId} label={label} user={summary?.user ?? null} />}
         </>

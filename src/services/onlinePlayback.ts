@@ -10,6 +10,7 @@ import { settlesOnOwnWordTiming } from '../utils/lyrics/ownWordTiming';
 import { createSafeObjectUrl } from '../utils/blobGuards';
 import type { AudioQualityPreference, MediaId, ProviderAudioSource } from '../types/onlineMusic';
 import { omni } from './onlineMusic/omni';
+import { effectiveAudioQuality } from './onlineMusic/quality/iosCompatQuality';
 import { autoRetryDelaysMs, logOnlineFailure, onlineFailureOf, type OnlineFailure } from './onlineMusic/failure/onlineFailureCase';
 import { noteOnlineRequestCooldown, onlineRequestCooldown } from './onlineMusic/failure/onlineRequestCooldown';
 import { getSongResourceCacheKey } from './onlineMusic/resourceKeys';
@@ -134,10 +135,15 @@ const switchToOtherLxSource = async (
 
 export async function loadOnlineSongAudioSource(
     song: SongResult,
-    audioQuality: AudioQualityPreference,
+    askedQuality: AudioQualityPreference,
     prefetched: PrefetchedSongData | null,
     options: LoadOnlineAudioSourceOptions = {},
 ): Promise<OnlineAudioSourceResult> {
+    // The level actually asked for. In the iOS container the lossless / Hi-Res presets are capped to
+    // 320k: those levels hand out a flac file, and WKWebView's <audio> does not decode that
+    // container - the play stayed on "loading" for ever and never fired an error (see
+    // onlineMusic/quality/iosCompatQuality.ts). Every other environment gets the level as stored.
+    const audioQuality = effectiveAudioQuality(askedQuality);
     // The copy in the media cache is taken only where it was fetched at the level the option now
     // means for this song's provider, or at an unknown one. A copy of another level is passed
     // over for a URL of the level asked for: the option decides what plays, cached or not.

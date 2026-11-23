@@ -9,7 +9,9 @@ import { omni } from '../../services/onlineMusic/omni';
 import { providerDisplayName } from '../../i18n/providerName';
 import { openLoginWindow } from '../login/loginWindowStore';
 import { PlatformMark } from '../login/PlatformMark';
-import { Select } from '../modal/settings/kit';
+import { Select, Toggle } from '../modal/settings/kit';
+import { useAudioSettingsStore } from '../../stores/useAudioSettingsStore';
+import { isIosNativePlatform } from '../../services/onlineMusic/webLogin/nativeLoginBridge';
 import { useKitReducedMotion } from '../modal/settings/kit/motion';
 import { GroupLine } from './shell/GroupLine';
 import { PanelButton } from './shell/PanelButton';
@@ -66,6 +68,11 @@ const AccountTab: React.FC<AccountTabProps> = ({
     const canLogout = !logoutPending && canLogoutProvider(activeSummary);
     // Only the levels the active provider tells apart are offered. The stored preference is one
     // value for every provider: where this one does not list it, the level it stands for here is lit.
+    // iOS 壳里音质被压到 320k/mp3：WKWebView 的 <audio> 解不了 flac 容器，无损 / Hi-Res 只换来一直转圈。
+    // 开关默认开，关掉它等于回到「放不出声」的那一档，所以这一行只在 iOS 壳里出现。
+    const iosCompatQuality = useAudioSettingsStore(state => state.iosCompatQuality);
+    const handleToggleIosCompatQuality = useAudioSettingsStore(state => state.handleToggleIosCompatQuality);
+    const showIosCompatQuality = isIosNativePlatform();
     const qualityLevels = omni.getAudioQualityLevels(activeProviderId);
     const qualityOptions = AUDIO_QUALITY_OPTIONS.filter(option => qualityLevels.includes(option.value));
     const litQuality = omni.resolveAudioQuality(activeProviderId, audioQuality);
@@ -136,6 +143,12 @@ const AccountTab: React.FC<AccountTabProps> = ({
                     onChange={(quality) => { if (quality !== litQuality) onAudioQualityChange(quality); }}
                 />
             </PanelRow>
+
+            {showIosCompatQuality && (
+                <PanelRow label={t('account.iosCompatQuality')} hint={t('account.iosCompatQualityNote')}>
+                    <Toggle checked={iosCompatQuality} onChange={handleToggleIosCompatQuality} />
+                </PanelRow>
+            )}
 
             <PlaybackSignalPathButton />
 

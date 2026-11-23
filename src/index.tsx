@@ -1,6 +1,7 @@
 import { Buffer } from 'buffer';
 import { installGlobalVisualizerFrameRateLimiter } from './utils/frameRateLimiter';
 import { installConsoleLogCapture } from './utils/consoleLogBuffer';
+import { installUnhandledRejectionGuard } from './utils/unhandledRejectionGuard';
 import { installDebugModule } from './services/debug/debugModule';
 import { installMemorySampleFeed } from './services/debug/memorySamples';
 import { isPerfCheckSurface } from './utils/appSurface';
@@ -10,6 +11,9 @@ globalThis.Buffer = Buffer;
 // First, so the debug overlay's console tab has the startup lines too - they are where a failure
 // to reach a library or restore a session shows up.
 installConsoleLogCapture();
+// A promise nobody caught used to print the same line a dozen times in the device log and bury the
+// ones that mattered; from here on it is said once, as a warning. See utils/unhandledRejectionGuard.ts.
+installUnhandledRejectionGuard();
 // Right after it, so the startup lines reach the runtime log file too and not only the in-memory
 // buffer. Both no-op off Electron. See services/debug/debugModule.ts.
 // Not in the performance check's window: the log pipe is the first-party windows' (the main process

@@ -8,6 +8,7 @@ import type { SongResult, UnifiedSong } from '../../../types';
 import { getOnlineProviderIdForSong } from '../../../utils/appPlaybackGuards';
 import { setStatusMessage } from '../../../stores/useStatusMessageStore';
 import { isAudioSourceRefused } from '../../playbackRecovery/nativeAudioProxy';
+import { effectiveAudioQuality, isIosQualityCapOn } from '../quality/iosCompatQuality';
 import i18n from '../../../i18n/config';
 import { clearLxVersionGateReports, createLxSourceHost, lxVersionGateReport, type LxSourceHost } from './lxSourceSandbox';
 import { enabledLxSources, useLxSourceStore } from './lxSourceStore';
@@ -201,8 +202,14 @@ const QUALITY_CHAIN: Record<LxQuality, LxQuality[]> = {
 
 /** Which levels a play asks for, in order: the one the setting means, then the ones below it. */
 const levelsFor = (quality: AudioQualityPreference): LxQuality[] => {
-    const asked = QUALITY_BY_PREFERENCE[quality] ?? '320k';
-    return QUALITY_CHAIN[asked] ?? [asked];
+    // The iOS container cannot decode a flac file at all (WKWebView's <audio> accepts the source and
+    // never produces a frame), so the lossless levels are asked at 320k there: an mp3 that plays
+    // beats a flac that stays on "loading" for ever. See onlineMusic/quality/iosCompatQuality.ts.
+    const asked = QUALITY_BY_PREFERENCE[effectiveAudioQuality(quality)] ?? '320k';
+    const chain = QUALITY_CHAIN[asked] ?? [asked];
+    // On iOS, `flac` is never a sensible step down either: a source that has only that level has
+    // nothing this container can play.
+    return isIosQualityCapOn() ? chain.filter(level => level !== 'flac' && level !== 'flac24bit') : chain;
 };
 
 /**

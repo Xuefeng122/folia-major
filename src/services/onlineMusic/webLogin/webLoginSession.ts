@@ -83,6 +83,34 @@ const sinkCookies = (spec: PlatformWebLoginSpec, header: string): void => {
     writeProviderSessionValue(spec.providerId, spec.sink.key, header);
 };
 
+/**
+ * 原生登录页建不起来时的退路：在系统浏览器里登录，把 Cookie 粘进来。
+ *
+ * 真机上如果 `loginWebView` 没能创建（插件没编进去、页面被系统收起），网页登录这条路就断在这里，
+ * 而不是让登录窗口只剩下扫码一条。这一条只做两件事：把粘进来的 Cookie 落到 App 自己用的地方，
+ * 再问平台一次认不认——和网页登录收尾时走的是同一段代码，所以「认不认」的说法也一致。
+ */
+export const runPastedCookieLogin = async (
+    spec: PlatformWebLoginSpec,
+    rawCookie: string,
+): Promise<WebLoginResult> => {
+    const header = rawCookie.trim().replace(/^cookie\s*:\s*/iu, '').replace(/\s+/gu, ' ');
+    if (!header) return { status: 'no-cookie', cookieNames: [] };
+    const names = header
+        .split(';')
+        .map(part => part.split('=')[0].trim())
+        .filter(Boolean);
+    sinkCookies(spec, header);
+    console.log(`[webLogin] pasted cookie written for ${spec.providerId}: ${names.length} name(s), login names ${spec.loginCookieNames.filter(name => names.includes(name)).join('/') || 'none'}`);
+    const outcome = await omni.readAccount(spec.providerId, 'sync');
+    return {
+        status: 'written',
+        cookieCount: names.length,
+        loginNames: spec.loginCookieNames.filter(name => names.includes(name)),
+        outcome,
+    };
+};
+
 export type WebLoginRunOptions = {
     /** 目标域上出现了登录 cookie（原生那边在轮询，这里只是被通知一声）。 */
     onCookieFound?: (names: string[]) => void;

@@ -10,8 +10,15 @@
 // same address answers fine outside the app.
 //
 // The road taken here asks the native HTTP plugin (CapacitorHttp, which runs outside the WebView)
-// for the bytes and plays them from a `blob:` URL, which the page may always load. Where the address
-// is https, or where there is no container at all, the address is played as it came.
+// for the bytes and plays them from a `blob:` URL, which the page may always load. This goes for
+// https just as much as for plain http: the decks carry `crossOrigin="anonymous"`, so an https file
+// from a host that sends no Access-Control-Allow-Origin is refused by WebKit - and a host that
+// answers audio without CORS headers is the common case for every source here. That refusal is what
+// a track that loads for ever without a sound or an error actually was.
+//
+// Where the container has no bridge to ask, the plugin is asked for once more from the top, and the
+// page's own `fetch` is the last resort - a fetch that cannot read the file in a secure page says so
+// in the log instead of handing the element an address that will never sound.
 //
 // An address that could not be had this way is *remembered as refused*, so the chain that asks for
 // an address never hands the same one out twice: the play moves on to another source or another
@@ -31,23 +38,91 @@ interface HttpPlugin {
     }>;
 }
 
-const nativeHttp = async (): Promise<HttpPlugin | null> => {
+interface NativePromisePlugin {
+    request?: (options: Record<string, unknown>) => Promise<{
+        status?: number;
+        data?: unknown;
+        headers?: Record<string, string>;
+    }>;
+}
+
+/**
+ * The plugin object Capacitor keeps for registered plugins, looked up straight off the injected
+ * runtime. CapacitorHttp is a core plugin, so `window.Capacitor.Plugins.CapacitorHttp` is there in
+ * every native container - but the iOS 8 runtime only fills that table lazily, so an early call can
+ * find it empty. Asking the native side to load the plugin by name fills it.
+ */
+const runtimeHttpPlugin = (): HttpPlugin | null => {
     const capacitor = (globalThis as { Capacitor?: { Plugins?: Record<string, unknown> } }).Capacitor;
     const direct = capacitor?.Plugins?.CapacitorHttp as HttpPlugin | undefined;
-    if (direct && typeof direct.request === 'function') return direct;
+    return direct && typeof direct.request === 'function' ? direct : null;
+};
+
+/** Asks the native side for the plugin object itself, once the lazy table has been filled. */
+const loadHttpPluginNatively = async (): Promise<HttpPlugin | null> => {
+    const capacitor = (globalThis as {
+        Capacitor?: {
+            nativePromise?: (pluginName: string, methodName: string, options?: Record<string, unknown>) => Promise<unknown>;
+            Plugins?: Record<string, unknown>;
+        };
+    }).Capacitor;
+    if (typeof capacitor?.nativePromise !== 'function') return null;
+    try {
+        await capacitor.nativePromise('CapacitorHttp', 'getPluginVersion');
+    } catch {
+        // getPluginVersion is only the cheapest call that makes the runtime build the plugin object;
+        // whether it answered does not matter, what it left behind does.
+    }
+    const plugin = capacitor?.Plugins?.CapacitorHttp as HttpPlugin | undefined;
+    return plugin && typeof plugin.request === 'function' ? plugin : null;
+};
+
+// One lookup per session: the plugin either is there or it is not, and every play asks.
+let httpPlugin: HttpPlugin | null | undefined;
+
+const nativeHttp = async (): Promise<HttpPlugin | null> => {
+    if (httpPlugin !== undefined) return httpPlugin;
+    httpPlugin = runtimeHttpPlugin();
+    if (httpPlugin) {
+        console.log('[AudioProxy] native http plugin found in the injected runtime');
+        return httpPlugin;
+    }
+    httpPlugin = await loadHttpPluginNatively();
+    if (httpPlugin) {
+        console.log('[AudioProxy] native http plugin loaded by name');
+        return httpPlugin;
+    }
     try {
         // Named through a variable so a build without @capacitor/core resolves nothing at build time.
         const name = '@capacitor/core';
         const mod = await import(/* @vite-ignore */ name) as { CapacitorHttp?: HttpPlugin };
         const plugin = mod.CapacitorHttp;
-        return plugin && typeof plugin.request === 'function' ? plugin : null;
+        httpPlugin = plugin && typeof plugin.request === 'function' ? plugin : null;
     } catch {
-        return null;
+        httpPlugin = null;
     }
+    console.log(`[AudioProxy] native http plugin ${httpPlugin ? 'available through @capacitor/core' : 'NOT available'}`);
+    return httpPlugin;
 };
 
 /** true in the container that can fetch for the page: what a play may be rescued with. */
 export const hasNativeHttp = async (): Promise<boolean> => Boolean(await nativeHttp());
+
+/**
+ * A bridge that was not there the first time is asked for again, from the top: the injected runtime
+ * fills `Capacitor.Plugins` lazily and the first ask can happen before the container has registered
+ * the core plugin (an early play, a cold start). Nothing is allowed to be concluded from that one
+ * empty table, so the cached answer is dropped and the three ways of finding the plugin are walked
+ * again. Where that still answers nothing, the caller falls back to the page's own fetch.
+ */
+const reaskNativeHttp = async (): Promise<HttpPlugin | null> => {
+    const capacitor = (globalThis as { Capacitor?: { Plugins?: Record<string, unknown> } }).Capacitor;
+    console.warn(`[AudioProxy] no-bridge: asking the container again (window.Capacitor=${capacitor ? (capacitor.Plugins ? 'Plugins present' : 'no Plugins') : 'absent'})`);
+    httpPlugin = undefined;
+    const plugin = await nativeHttp();
+    if (plugin) console.log('[AudioProxy] no-bridge: the bridge answered on the second ask');
+    return plugin;
+};
 
 const AUDIO_HEADERS = {
     // Some sources answer only to a browser-like ask; the container's own UA is not one they know.
@@ -98,7 +173,27 @@ const audioTypeOf = (address: string, headers: Record<string, string> | undefine
 const AUDIO_TIMEOUT_MS = 30000;
 
 /**
- * Reads a whole audio file through the native bridge. Throws where the answer is not audio: a
+ * The largest file worth turning into a blob. A lossless link answers 80MB and more, and the whole
+ * file is held twice on the way (the bytes, then the blob of them), which is how a phone runs out of
+ * memory in the middle of a song. Past this size the address is refused *with a reason* - so the
+ * chain tries another level instead of the element spinning on a file it never finishes loading.
+ */
+const MAX_BLOB_BYTES = 60 * 1024 * 1024;
+
+const MAX_BLOB_MB = MAX_BLOB_BYTES / 1048576;
+
+/** A file too large to be held as a blob: the one failure a caller is meant to act on. */
+export class AudioTooLargeError extends Error {
+    readonly megabytes: number;
+
+    constructor(megabytes: number) {
+        super(`file is ${megabytes.toFixed(1)}MB, over the ${MAX_BLOB_MB}MB blob limit`);
+        this.name = 'AudioTooLargeError';
+        this.megabytes = megabytes;
+    }
+}
+
+/** Reads a whole audio file through the native bridge. Throws where the answer is not audio: a
  * source that answers an error page with 200 must not be played as if it were the song.
  */
 export const fetchAudioBytes = async (
@@ -121,9 +216,52 @@ export const fetchAudioBytes = async (
     if (contentType.startsWith('refused:')) {
         throw new Error(`the address answered ${contentType.slice(8)} instead of audio`);
     }
+    // A declared size that is already too large saves the download: the plugin would hold the whole
+    // file in memory before the caller ever sees it.
+    const declared = Number(headerOf(answer.headers, 'content-length'));
+    if (Number.isFinite(declared) && declared > MAX_BLOB_BYTES) {
+        throw new AudioTooLargeError(declared / 1048576);
+    }
     const bytes = bytesOf(answer.data);
     if (!bytes.byteLength) throw new Error('the address answered no bytes');
+    if (bytes.byteLength > MAX_BLOB_BYTES) throw new AudioTooLargeError(bytes.byteLength / 1048576);
     return { bytes, contentType, status };
+};
+
+/**
+ * The page's own `fetch`, for a container with no bridge to ask at all. In the secure page the shell
+ * is served from, a cross-origin https file that carries no CORS headers cannot be read here - which
+ * is exactly the case worth *logging* rather than passing the address on for a silent wait. A read
+ * that succeeds gives the same blob the bridge would have.
+ */
+const fetchAudioBytesInPage = async (
+    address: string,
+    headers: Record<string, string> = {},
+): Promise<NativeAudioBytes> => {
+    const response = await fetch(address, {
+        method: 'GET',
+        headers: { ...AUDIO_HEADERS, ...headers },
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`web fetch HTTP ${response.status}`);
+    const responseHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+    });
+    const contentType = audioTypeOf(address, responseHeaders);
+    if (contentType.startsWith('refused:')) {
+        throw new Error(`the address answered ${contentType.slice(8)} instead of audio`);
+    }
+    const declared = Number(responseHeaders['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_BLOB_BYTES) {
+        throw new AudioTooLargeError(declared / 1048576);
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.byteLength) throw new Error('the address answered no bytes');
+    if (bytes.byteLength > MAX_BLOB_BYTES) throw new AudioTooLargeError(bytes.byteLength / 1048576);
+    return { bytes, contentType, status: response.status };
 };
 
 // ---- the addresses this session found unplayable -----------------------------------------------
@@ -156,10 +294,42 @@ export const refuseAudioSource = (address: string | null | undefined): void => {
     if (!key) return;
     refused.add(key);
     console.log(`[AudioProxy] ${key} will not be tried again in this session`);
+    noticeProxyChange();
 };
 
 export const clearRefusedAudioSources = (): void => {
     refused.clear();
+};
+
+// ---- telling the player when an address became playable -----------------------------------------
+
+// The element is given a source that arrives a moment later (the bytes come through the bridge), so
+// whatever decides "the element is already on the current source, nothing to do" has to be told when
+// the blob replaces the address it was waiting on. That is what this counter is: the player watches
+// it and re-asks instead of concluding, once and for all, that the element was never handed the song.
+
+const proxyListeners = new Set<() => void>();
+let proxyTick = 0;
+
+/** Subscribed to by the player: answers a new number every time an address became playable or died. */
+export const subscribeAudioProxy = (listener: () => void): (() => void) => {
+    proxyListeners.add(listener);
+    return () => {
+        proxyListeners.delete(listener);
+    };
+};
+
+export const getAudioProxyTick = (): number => proxyTick;
+
+const noticeProxyChange = (): void => {
+    proxyTick += 1;
+    for (const listener of Array.from(proxyListeners)) {
+        try {
+            listener();
+        } catch {
+            // A listener that throws must not stop the play it was told about.
+        }
+    }
 };
 
 // ---- the addresses turned into something the page can play ---------------------------------------
@@ -200,6 +370,7 @@ const storeCopy = (key: string, bytes: Uint8Array, contentType: string): string 
     const objectUrl = URL.createObjectURL(blob);
     copies.set(key, { objectUrl, at: Date.now(), bytes: bytes.byteLength });
     console.log(`[AudioProxy] fetched ${(bytes.byteLength / 1048576).toFixed(1)}MB as ${contentType || 'audio'} for ${key}`);
+    noticeProxyChange();
     return objectUrl;
 };
 
@@ -214,33 +385,77 @@ export interface PlayableAudioAddress {
 
 /**
  * The address a play may actually use, or null where it cannot be played here at all (and has been
- * remembered as refused). `address` is returned untouched when it is not a plain-http address, when
- * there is no container, or when the very same file is already in hand.
+ * remembered as refused, so the chain asks for another level instead of waiting on it again).
+ *
+ * Both http and https go through the bridge: inside the shell every remote file is the element's to
+ * fetch with `crossOrigin="anonymous"`, which is the one thing these hosts do not allow. The address
+ * comes back untouched only where there is nothing to fetch at all (`blob:`, `data:`, the app's own
+ * origin) or where the very same file is already in hand.
  */
 export const toPlayableAudioAddress = async (address: string): Promise<PlayableAudioAddress | null> => {
     const trimmed = address.trim();
-    if (!trimmed) return null;
-    if (!/^https?:\/\//iu.test(trimmed)) return { url: trimmed, throughNative: false };
-    if (isAudioSourceRefused(trimmed)) return null;
+    // Every address a play is about to hand to an <audio> element passes through here, so this is
+    // the one line a device log needs to show that the proxy is on the play path at all.
+    if (!trimmed) {
+        console.log('[AudioProxy] skip: empty address');
+        return null;
+    }
+    if (!/^https?:\/\//iu.test(trimmed)) {
+        // blob:, data:, file:, capacitor://localhost: already something the page can load.
+        console.log(`[AudioProxy] skip:non-http ${trimmed.slice(0, 48)}`);
+        return { url: trimmed, throughNative: false };
+    }
     const key = audioSourceKey(trimmed) as string;
+    if (isAudioSourceRefused(trimmed)) {
+        console.log(`[AudioProxy] skip:refused ${key} was already refused in this session`);
+        return null;
+    }
     const held = copies.get(key);
     if (held) {
         held.at = Date.now();
+        console.log(`[AudioProxy] cache-hit ${key} (${(held.bytes / 1048576).toFixed(1)}MB already in hand)`);
         return { url: held.objectUrl, blobUrl: held.objectUrl, throughNative: true };
     }
-    // https plays in the page as it is: fetching it would only add a copy and a wait.
-    if (trimmed.toLowerCase().startsWith('https://')) return { url: trimmed, throughNative: false };
-    if (!(await hasNativeHttp())) return { url: trimmed, throughNative: false };
+    const plain = trimmed.toLowerCase().startsWith('http://');
+    const why = plain
+        ? 'plain http, the secure page cannot load it itself'
+        : 'https through the bridge: the element carries crossOrigin=anonymous and hosts here send no CORS';
+    console.log(`[AudioProxy] start ${key} (${why})`);
+    // https goes through the bridge exactly like plain http does. A bridge that answered nothing the
+    // first time - the lazy plugin table, a cold start - is asked for once more before the page's own
+    // fetch is tried, and only a fetch that also fails leaves the address refused with its reason.
+    let bridge = await hasNativeHttp();
+    if (!bridge) bridge = Boolean(await reaskNativeHttp());
+    if (!bridge) console.warn(`[AudioProxy] no-bridge ${key}: nothing native to ask, falling back to the page fetch`);
     try {
-        const answer = await fetchAudioBytes(trimmed);
+        const answer = bridge ? await fetchAudioBytes(trimmed) : await fetchAudioBytesInPage(trimmed);
         const objectUrl = storeCopy(key, answer.bytes, answer.contentType);
         return { url: objectUrl, blobUrl: objectUrl, throughNative: true };
     } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        console.warn(`[AudioProxy] ${key} could not be fetched through the native bridge: ${reason}`);
+        const kind = error instanceof AudioTooLargeError ? 'too-large' : bridge ? 'bridge' : 'page-fetch';
+        console.warn(`[AudioProxy] fail ${reason} [${kind}] for ${key}`);
         refuseAudioSource(trimmed);
         return null;
     }
+};
+
+/**
+ * The blob this session already holds for an address, if any. The player asks before it concludes
+ * that an element whose `src` is not the address it is playing has drifted: a `blob:` there is this
+ * same song, already fetched.
+ */
+export const playableCopyOf = (address: string | null | undefined): string | null => {
+    const key = audioSourceKey(address);
+    if (!key) return null;
+    return copies.get(key)?.objectUrl ?? null;
+};
+
+/** Whether an element's `src` is this address, either as it came or as the blob fetched for it. */
+export const isHoldingAudioAddress = (elementSrc: string | null | undefined, address: string | null | undefined): boolean => {
+    if (!elementSrc) return false;
+    if (elementSrc === address) return true;
+    return Boolean(address) && playableCopyOf(address) === elementSrc;
 };
 
 /** Drops every copy held in memory (a new session, or the listener asked to start over). */

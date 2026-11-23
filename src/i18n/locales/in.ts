@@ -1684,6 +1684,10 @@ export default {
     "qualityUltra": "Ultra Tinggi",
     "qualityLossless": "Lossless",
     "qualityHires": "Hi-Res",
+    "iosCompatQuality": "Utamakan kualitas kompatibel iOS",
+    "iosCompatQualityNote": "Putar 320k (mp3) di iOS; lossless / Hi-Res tidak dapat didekode di sini",
+    "iosFlacUnsupported": "Kualitas ini (flac) tidak dapat didekode di iOS; sudah dialihkan ke yang kompatibel, coba lagi",
+    "iosFlacUnsupportedCapped": "Kualitas ini tidak dapat didekode di sini; aktifkan “Utamakan kualitas kompatibel iOS” di pengaturan",
     "vipOnly": "Hanya VIP"
   },
   "playlist": {

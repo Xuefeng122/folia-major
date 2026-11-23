@@ -125,7 +125,7 @@ export const HOME_WAIT_MS = 5_000;
 // later read of the platform, which joins the one under way. Longer than the longest wait an
 // adapter makes of its own before it asks: NetEase on the desktop waits up to 45 s for its local
 // API to start (netease.ts).
-const WHO_WAIT_MS = 60_000;
+const WHO_WAIT_MS = 15_000;
 
 // The longest the home screen waits before it reads an account again whose user could not be asked.
 // A platform that cannot answer for the whole run (a sign-in stored that this run cannot unseal)

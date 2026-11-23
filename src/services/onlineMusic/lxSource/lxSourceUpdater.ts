@@ -276,7 +276,8 @@ export const checkLxSourceUpdate = async (
     }
     const current = await readLxSourceScript(meta.id);
     const currentVersion = meta.version || (current ? readLxScriptHeader(current).version : '') || '';
-    let reason = '';
+    // 检查失败时卡片上统一显示的一句；技术原因另存 detail，只进日志。
+    let failed = false;
     // A manifest may name where the script went, so the queue grows as answers are read: the
     // page a manifest points at is tried next when it is itself a fetchable script.
     const queue = [...addresses];
@@ -334,8 +335,10 @@ export const checkLxSourceUpdate = async (
                 remoteVersion,
             };
         } catch (error) {
-            reason = error instanceof Error ? error.message : String(error);
-            console.warn(`[LxSource] ${meta.name} update check failed at ${address}:`, reason);
+            // 卡片上只说一句人话：真机上这些地址要么被网络挡住、要么不让 WebView 读，报出来的
+            // 「Load failed」「TypeError: …」对用的人没有意义。技术原因留在控制台里给排查用。
+            failed = true;
+            console.warn(`[LxSource] ${meta.name} update check failed at ${address}: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
     if (manifestAnswer) return manifestAnswer;
@@ -345,9 +348,8 @@ export const checkLxSourceUpdate = async (
         status: 'error',
         address: addresses[0],
         currentVersion,
-        // A check that failed must still say why: 「检查更新失败: undefined」 is what an empty
-        // reason reads as, and it says nothing about whether the source itself still works.
-        reason: reason || '无法检查更新（地址没有返回脚本，也没有返回版本清单）',
+        // 统一的说法：每一家、每一种失败在这里都是同一句，不再把 fetch 的原始报错贴到卡片上。
+        reason: failed ? '无法检查更新' : '无法检查更新（地址没有返回脚本，也没有返回版本清单）',
     };
 };
 

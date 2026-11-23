@@ -3,9 +3,9 @@ import type { TFunction } from 'i18next';
 import type { LibraryAccountController } from '../../library/core/account/account.contract';
 import { setStatusMessage } from '../../stores/useStatusMessageStore';
 import type { OnlineProviderId } from '../../types/onlineMusic';
-import { canUseWebLogin, loginBridgeDiagnostics, probeLoginBridge } from '../../services/onlineMusic/webLogin/nativeLoginBridge';
+import { canUseWebLogin, isIosNativePlatform, loginBridgeDiagnostics, probeLoginBridge } from '../../services/onlineMusic/webLogin/nativeLoginBridge';
 import { platformWebLogin } from '../../services/onlineMusic/webLogin/platformWebLogin';
-import { runWebLogin } from '../../services/onlineMusic/webLogin/webLoginSession';
+import { runPastedCookieLogin, runWebLogin } from '../../services/onlineMusic/webLogin/webLoginSession';
 import { syncAccountData } from './syncAccountData';
 
 // src/components/login/useWebLoginAction.ts
@@ -23,6 +23,10 @@ export type WebLoginAction = {
     /** 这一家的网页登录要做什么（画在按钮旁边的那句话）；没有就是 null。 */
     note: (providerId: OnlineProviderId | null) => string | null;
     run: (providerId: OnlineProviderId) => void;
+    /** iOS 壳里总有这一条退路：原生登录页建不起来时，用系统浏览器登录再把 Cookie 粘回来。 */
+    pasteAvailable: boolean;
+    /** 把粘进来的 Cookie 落盘并问平台一次（结局的说法和网页登录收尾时一致）。 */
+    runPasted: (providerId: OnlineProviderId, cookie: string) => void;
 };
 
 export const useWebLoginAction = (
@@ -104,5 +108,43 @@ export const useWebLoginAction = (
         });
     }, [account, t]);
 
-    return { available, busy, supported, note, run };
+    // 退路：原生登录页这一次没建起来（真机上 `[webLogin] open` 之后没有页面），也不该让登录窗口
+    // 只剩扫码一条。iOS 壳里一直给这一条，粘进来的 Cookie 走的是和网页登录收尾同一个落盘函数。
+    const pasteAvailable = isIosNativePlatform();
+    const runPasted = useCallback((providerId: OnlineProviderId, cookie: string) => {
+        const spec = platformWebLogin(providerId);
+        if (!spec || running.current) return;
+        if (!cookie.trim()) {
+            setStatusMessage({ type: 'error', text: t('login.webLoginPasteEmpty'), providerId });
+            return;
+        }
+        running.current = true;
+        setBusy(true);
+        console.log(`[webLogin] paste submit provider=${providerId} length=${cookie.trim().length}`);
+        void runPastedCookieLogin(spec, cookie)
+            .then(async result => {
+                if (result.status !== 'written') {
+                    setStatusMessage({ type: 'error', text: t('login.webLoginNoCookie'), note: t('login.webLoginNoCookieNote'), providerId });
+                    return;
+                }
+                if (result.outcome === 'read') {
+                    await syncAccountData(account, providerId, t);
+                    setStatusMessage({ type: 'success', text: t('login.webLoginSignedIn'), providerId });
+                    return;
+                }
+                setStatusMessage({
+                    type: 'error',
+                    text: t('login.webLoginNotRecognised'),
+                    note: t('login.webLoginNotRecognisedNote'),
+                    providerId,
+                });
+            })
+            .catch(() => setStatusMessage({ type: 'error', text: t('login.webLoginFailed'), providerId }))
+            .finally(() => {
+                running.current = false;
+                setBusy(false);
+            });
+    }, [account, t]);
+
+    return { available, busy, supported, note, run, pasteAvailable, runPasted };
 };

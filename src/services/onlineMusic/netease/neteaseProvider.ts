@@ -790,13 +790,19 @@ export const neteaseProvider: OnlineMusicProvider = {
         localService: neteaseLocalService,
         async getLoginStatus() {
             cookieAskedWith = readProviderSessionValue('netease', 'cookie', ['netease_cookie']);
+            // 没存 cookie 就是游客：不必问网易云，也不该让首页的账号读取等两条请求。
+            if (!cookieAskedWith) {
+                noteLoginStatusCheck(diagnosticLine`no cookie stored, nobody is taken to be signed in (no request made)`);
+                return null;
+            }
             // 手机上这条路是两条连着发的直连请求：没登录时网易云很快回答，但网络卡住时一次请求能拖到十几秒，
-            // 两条叠起来就是 accountRead 那边的 60 秒。所以手机给整段问话一个上限，超时按「没有人登录」收场
-            // （等于游客态），不再让首页的账号读取一直挂着。桌面和填了后端地址的构建没有这个上限。
+            // 两条叠起来就是 accountRead 那边的 60 秒。所以给整段问话一个上限（不看有没有原生桥：没有桥时
+            // 走的是页面 fetch，一样会挂），超时按「没有人登录」收场（等于游客态），不再让首页的账号读取一直挂着。
             const check = askNeteaseWhoIsSignedIn();
-            if (!(await canUseNativeHttp())) return check;
             // 超时之后原来的请求还会自己走完：它的失败在这里就地吃掉，否则会变成一条 unhandled rejection。
-            check.catch(() => {});
+            check.catch(error => {
+                console.warn(`[Account] netease: the sign-in check that ran on after the ${SIGN_IN_CHECK_BUDGET_MS / 1000} s budget ended failed: ${error instanceof Error ? error.message : String(error)}`);
+            });
             const answer = await Promise.race([
                 check.then(user => ({ user, timedOut: false as const })),
                 new Promise<{ user: null; timedOut: true }>(resolve => {

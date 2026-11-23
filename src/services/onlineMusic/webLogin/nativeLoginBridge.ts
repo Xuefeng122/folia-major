@@ -95,6 +95,14 @@ const loadLoginBridge = async (): Promise<LoginBridgePlugin | null> => nativeLog
 
 /** 这是不是 iOS 原生壳（Capacitor 的 iOS 容器）。网页版 / 桌面版这里恒为 false。 */
 export const isIosNativePlatform = (): boolean => {
+    // 先问原生注入的运行时（一定在、一定同步），再退到 @capacitor/core：真机上这两条哪一条先答得上
+    // 都算 iOS 壳，不该因为 @capacitor/core 这一侧被替换/晚到就把入口判成「没有」。
+    const runtime = capacitorGlobal() as (CapacitorGlobal & { getPlatform?: () => string }) | null;
+    try {
+        if (typeof runtime?.getPlatform === 'function' && runtime.getPlatform() === 'ios') return true;
+    } catch {
+        // 运行时这一条问不出来，接着问 @capacitor/core。
+    }
     try {
         if (typeof CapacitorCore?.isNativePlatform === 'function' && !CapacitorCore.isNativePlatform()) return false;
         return typeof CapacitorCore?.getPlatform === 'function' && CapacitorCore.getPlatform() === 'ios';

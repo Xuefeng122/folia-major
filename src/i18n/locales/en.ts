@@ -1684,6 +1684,10 @@ export default {
     "qualityUltra": "Ultra High",
     "qualityLossless": "Lossless",
     "qualityHires": "Hi-Res",
+    "iosCompatQuality": "iOS compatible quality first",
+    "iosCompatQualityNote": "Play 320k (mp3) on iOS; lossless / Hi-Res cannot be decoded here",
+    "iosFlacUnsupported": "This quality (flac) cannot be decoded on iOS; it was switched to the compatible one, try again",
+    "iosFlacUnsupportedCapped": "This quality cannot be decoded here; turn on “iOS compatible quality first” in settings",
     "vipOnly": "VIP Only"
   },
   "playlist": {
@@ -1856,6 +1860,11 @@ export default {
     "webLoginNotRecognised": "The cookie was saved, but the platform did not recognise it",
     "webLoginNotRecognisedNote": "Sign out in the web page and sign in again, or use the QR code instead",
     "webLoginFailed": "Web sign-in failed",
+    "webLoginPaste": "Sign in with a pasted cookie",
+    "webLoginPasteHint": "When the in-app login page will not open: sign in with Safari, then paste the site's Cookie here (the login entries are enough).",
+    "webLoginPasteSubmit": "Save and check",
+    "webLoginPasteCancel": "Cancel",
+    "webLoginPasteEmpty": "Nothing was pasted",
     "webLoginHintNetease": "Scan the code or enter your password in the page that opens, then tap Done",
     "webLoginHintQq": "Sign in on the QQ Music page that opens, then tap Done",
     "webLoginHintKugou": "Sign in on the Kugou page that opens, then tap Done",

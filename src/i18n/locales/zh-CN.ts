@@ -1769,6 +1769,10 @@ export default {
     "qualityUltra": "超高",
     "qualityLossless": "无损",
     "qualityHires": "Hi-Res",
+    "iosCompatQuality": "iOS 兼容音质优先",
+    "iosCompatQualityNote": "iOS 上先放 320k（mp3），无损 / Hi-Res 在这里放不出声",
+    "iosFlacUnsupported": "这个音质（flac）在 iOS 上无法解码，已切到兼容音质，请重试",
+    "iosFlacUnsupportedCapped": "当前音质在这台设备上无法解码，可在设置里打开「iOS 兼容音质优先」",
     "vipOnly": "VIP 专属"
   },
   "playlist": {
@@ -1941,6 +1945,11 @@ export default {
     "webLoginNotRecognised": "登录凭据已取回，但平台没有认出来",
     "webLoginNotRecognisedNote": "可以在网页里退出后重新登录，或者改用扫码登录",
     "webLoginFailed": "网页登录失败",
+    "webLoginPaste": "粘贴 Cookie 登录",
+    "webLoginPasteHint": "网页登录页没打开时用这条：先用 Safari 登录该平台，再把 Cookie 粘到这里（有登录凭据那几项就够）。",
+    "webLoginPasteSubmit": "写入并验证",
+    "webLoginPasteCancel": "取消",
+    "webLoginPasteEmpty": "粘进来的内容是空的",
     "webLoginHintNetease": "在打开的音乐网页里扫码或输入密码登录，完了点右上角「完成登录」",
     "webLoginHintQq": "在打开的 QQ 音乐网页里登录，完了点「完成登录」",
     "webLoginHintKugou": "在打开的酷狗网页里登录，完了点「完成登录」",
