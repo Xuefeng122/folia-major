@@ -77,19 +77,59 @@ interface ManifestEntry {
     url: string;
 }
 
-/** The listener's own list of scripts and their addresses (`[{ "name": "…", "url": "…" }]`). */
+/**
+ * Reads one address out of whatever a stored update list turned out to be. The field is free text —
+ * listeners paste a single script address, a `{ "name": …, "url": … }` object, a list of either, or
+ * a release manifest in the shape gitee/kstore publish (`{ "version": …, "updateUrl": … }`) — so the
+ * shape is not assumed: an address that is a usable http(s) link is taken whoever carries it.
+ */
+const entriesOf = (value: unknown, depth = 0): ManifestEntry[] => {
+    if (depth > 3 || value === null || value === undefined) return [];
+    if (typeof value === 'string') {
+        const url = toRawAddress(value);
+        return /^https?:\/\//iu.test(url) ? [{ name: '', url }] : [];
+    }
+    if (Array.isArray(value)) return value.flatMap(item => entriesOf(item, depth + 1));
+    if (typeof value !== 'object') return [];
+    const record = value as Record<string, unknown>;
+    // A named entry, or a release manifest that names where a newer copy lives.
+    const direct = record.url ?? record.updateUrl ?? record.update_url ?? record.address ?? record.src;
+    if (typeof direct === 'string') {
+        const url = toRawAddress(direct);
+        if (/^https?:\/\//iu.test(url)) {
+            const name = record.name ?? record.title ?? record.sourceName ?? '';
+            return [{ name: typeof name === 'string' ? name : '', url }];
+        }
+    }
+    // Otherwise a container: `{ "sources": [...] }`, or a plain `{ "念心": "https://…" }` map.
+    return Object.entries(record).flatMap(([key, item]) => entriesOf(item, depth + 1).map(entry => (
+        entry.name ? entry : { ...entry, name: key }
+    )));
+};
+
+/**
+ * The listener's own list of scripts and their addresses. Nothing here is allowed to throw: an
+ * update list that cannot be read only means the address guesses are fewer, never that a source
+ * fails to initialise — a listener's own text must not decide whether the sources start.
+ */
 const readManifest = (): ManifestEntry[] => {
     if (typeof window === 'undefined') return [];
+    let raw: string | null = null;
     try {
-        const raw = window.localStorage.getItem(MANIFEST_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return (parsed as ManifestEntry[])
-            .filter(entry => entry && typeof entry.url === 'string' && entry.url)
-            .map(entry => ({ name: String(entry.name ?? ''), url: toRawAddress(entry.url) }));
-    } catch (error) {
-        console.warn('[LxSource] Failed to read the update list', error);
+        raw = window.localStorage.getItem(MANIFEST_KEY);
+    } catch {
+        return [];
+    }
+    if (!raw) return [];
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+    try {
+        return entriesOf(JSON.parse(trimmed));
+    } catch {
+        // Not JSON at all: a pasted address (or a few) is the likely content, so read it as that.
+        const pasted = entriesOf(trimmed);
+        if (pasted.length) return pasted;
+        console.warn('[LxSource] 更新列表既不是 JSON 也不是地址，已忽略（不影响音源使用）');
         return [];
     }
 };
@@ -305,7 +345,9 @@ export const checkLxSourceUpdate = async (
         status: 'error',
         address: addresses[0],
         currentVersion,
-        reason,
+        // A check that failed must still say why: 「检查更新失败: undefined」 is what an empty
+        // reason reads as, and it says nothing about whether the source itself still works.
+        reason: reason || '无法检查更新（地址没有返回脚本，也没有返回版本清单）',
     };
 };
 

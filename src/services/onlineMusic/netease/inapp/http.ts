@@ -62,6 +62,20 @@ const asText = (value: unknown) => {
 };
 
 /**
+ * The answer, or a failure once `ms` have passed. The plugin's own `connectTimeout` / `readTimeout`
+ * are not relied on alone: on iOS a request to a host that accepts the connection and then stalls
+ * has been seen to stay pending well past them, and a sign-in check that waits that long holds every
+ * later read of the platform behind it.
+ */
+const withinTimeout = <T>(request: Promise<T>, ms: number, what: string): Promise<T> => new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} did not answer in ${ms / 1000} s`)), ms);
+    request.then(
+        answer => { clearTimeout(timer); resolve(answer); },
+        failure => { clearTimeout(timer); reject(failure); },
+    );
+});
+
+/**
  * POSTs an `application/x-www-form-urlencoded` body through the native plugin.
  * Throws when there is no plugin: a fetch fallback would be refused by WebKit anyway, so the caller
  * should surface a network failure instead of pretending it tried.
@@ -75,7 +89,7 @@ export const nativeFormPost = async (
     if (!plugin) {
         throw new Error('no native HTTP plugin available for the in-app NetEase channel');
     }
-    const response = await plugin.request({
+    const response = await withinTimeout(plugin.request({
         url,
         method: 'POST',
         headers,
@@ -84,7 +98,7 @@ export const nativeFormPost = async (
         responseType: 'text',
         connectTimeout: 15000,
         readTimeout: 20000,
-    });
+    }), 20_000, `NetEase request ${url.split('?')[0]}`);
     return {
         status: typeof response.status === 'number' ? response.status : 0,
         body: asText(response.data),

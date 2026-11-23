@@ -24,6 +24,13 @@ import type { SongResult } from '../types';
 //   list was not read to the end. Heard from the store, so the app is not drawn again for it.
 // (A completed sign-in, a platform switch and the sync button: useOnlineProviderPlatform.ts.)
 
+// A read that fails is already reported by account/ (the platform is marked, the account stays as it
+// is shown). Nothing here needs its failure: what must not happen is the rejection escaping as an
+// unhandled one at every start, which is what a bare `void` on these promises did.
+const carryOn = (what: string) => (error: unknown) => {
+    console.warn(`[Account] ${what} failed, the account stays as it is shown: ${error instanceof Error ? error.message : String(error)}`);
+};
+
 export const useAccountReads = () => {
     const isHome = useAppViewStore(state => state.view === 'home');
     const hasCollection = useCollectionNavigationStore(state => Boolean(state.snapshot?.stack.length));
@@ -31,7 +38,7 @@ export const useAccountReads = () => {
 
     useEffect(() => {
         omni.getProviderSummaries().forEach(provider => {
-            if (provider.requiresAccount) void omni.readAccount(provider.providerId, 'start');
+            if (provider.requiresAccount) void omni.readAccount(provider.providerId, 'start').catch(carryOn(`${provider.providerId}: start`));
         });
     }, []);
 
@@ -43,12 +50,12 @@ export const useAccountReads = () => {
             // The platform refused the sign-in and named nobody: the account has left the screen.
             // Said once, with that platform's mark.
             if (playlists === 'ran out') setStatusMessage({ type: 'error', text: i18n.t('login.signInRanOut'), providerId });
-        });
+        }).catch(carryOn('home-entered'));
     }, [atHome]);
 
     useEffect(() => {
         const returned = () => {
-            if (document.visibilityState === 'visible') void omni.accountMoment('window-returned');
+            if (document.visibilityState === 'visible') void omni.accountMoment('window-returned').catch(carryOn('window-returned'));
         };
         window.addEventListener('focus', returned);
         document.addEventListener('visibilitychange', returned);
@@ -59,9 +66,14 @@ export const useAccountReads = () => {
     }, []);
 
     useEffect(() => {
-        const tell = ({ currentSong, playQueue }: { currentSong: SongResult | null; playQueue: SongResult[] }) => (
-            omni.songsInPlay(currentSong ? [currentSong, ...playQueue] : playQueue)
-        );
+        const tell = ({ currentSong, playQueue }: { currentSong: SongResult | null; playQueue: SongResult[] }) => {
+            // Bookkeeping only: a platform that cannot answer must not take the screen down with it.
+            try {
+                omni.songsInPlay(currentSong ? [currentSong, ...playQueue] : playQueue);
+            } catch (error) {
+                carryOn('songs in play')(error);
+            }
+        };
         tell(usePlaybackStore.getState());
         return usePlaybackStore.subscribe((state, previous) => {
             if (state.currentSong !== previous.currentSong || state.playQueue !== previous.playQueue) tell(state);

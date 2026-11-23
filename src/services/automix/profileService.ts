@@ -7,6 +7,7 @@ import { hasProviderKeptSongAudio, keepProviderSongAudio, keepsOwnSongAudio } fr
 import { getCachedSongAudioBlob, hasCachedSongAudio, saveSongAudioLevel } from '../onlineMusic/resourceCache';
 import { getSongResourceCacheKey } from '../onlineMusic/resourceKeys';
 import { isCacheableAudioResponse } from '../playbackRecovery/mediaCacheGuard';
+import { fetchAudioBytes, fetchAudioRange, hasNativeHttp } from '../playbackRecovery/nativeAudioProxy';
 import type { PlaybackRepresentation } from '../../types/playbackRecovery';
 import { getPlaybackAnalysisKey, getPlaybackAnalysisTarget } from '../playbackRecovery/representationRegistry';
 import { mayStoreSongAudio, whyNotTheSong, whyNotTheSongPlayed, whyPreviewClip } from '../wholeSongCheck';
@@ -296,12 +297,46 @@ type BytesResult =
  * download this path exists to avoid, so the body is cancelled rather than used.
  */
 const readPrefix = async (audioUrl: string): Promise<BytesResult> => {
+    // A plain-http address cannot be fetched from the page in the container (mixed content), so its
+    // front is read through the native bridge; the status decides whether the range was honoured.
+    if (/^http:\/\//iu.test(audioUrl) && await hasNativeHttp()) {
+        const native = await fetchAudioRange(audioUrl, 0, PREFIX_BYTES);
+        if (!native || native.status !== 206) return { skipped: RANGE_REFUSED };
+        return { bytes: native.bytes, partial: true };
+    }
     const response = await fetch(audioUrl, { headers: { Range: `bytes=0-${PREFIX_BYTES - 1}` } });
     if (response.status !== 206) {
         await response.body?.cancel();
         return { skipped: RANGE_REFUSED };
     }
     return { bytes: await response.arrayBuffer(), partial: true };
+};
+
+/**
+ * The whole file, for the analysis read. A plain-http address is read through the native bridge -
+ * the page itself is refused it - and handed on in the shape the checks below expect, so what is
+ * stored from a native read passes exactly the checks a download does.
+ */
+const readWholeAudio = async (audioUrl: string): Promise<{ blob: Blob; ok: boolean; contentType: string; status: number }> => {
+    if (/^http:\/\//iu.test(audioUrl) && await hasNativeHttp()) {
+        try {
+            const answer = await fetchAudioBytes(audioUrl);
+            const type = answer.contentType;
+            const blob = new Blob([answer.bytes as unknown as BlobPart], type ? { type } : undefined);
+            return { blob, ok: true, contentType: type, status: answer.status };
+        } catch (error) {
+            console.warn('[Automix] the native read of the track failed', error);
+            return { blob: new Blob([]), ok: false, contentType: '', status: 0 };
+        }
+    }
+    const response = await fetch(audioUrl);
+    const blob = await response.blob();
+    return {
+        blob,
+        ok: response.ok,
+        contentType: response.headers?.get('content-type') ?? blob.type,
+        status: response.status,
+    };
 };
 
 /**
@@ -418,17 +453,17 @@ const readBytes = async (
             return prefix;
         }
 
-        const response = await fetch(audioUrl);
+        const download = await readWholeAudio(audioUrl);
         // An error page is a body too: without this check it is saved below as the track's audio.
-        if (!response.ok) throw new Error(`audio request failed with status ${response.status}`);
-        const blob = await response.blob();
+        if (!download.ok) throw new Error(`audio request failed with status ${download.status}`);
+        const blob = download.blob;
         // A JSON refusal or a truncated body is not audio either: cached, it would stand in for the
         // real track on every later play, and decoded, it would be remembered as a permanent
         // "unsupported" verdict for a track that merely failed to download this once.
-        if (!isCacheableAudioResponse(response, blob)) {
+        if (!isCacheableAudioResponse({ ok: download.ok, headers: { get: () => download.contentType || null } }, blob)) {
             console.warn('[Automix] the download for analysis does not look like audio', {
-                status: response.status,
-                contentType: response.headers?.get('content-type') ?? blob.type,
+                status: download.status,
+                contentType: download.contentType,
                 size: blob.size,
             });
             return { skipped: 'the download was not audio' };

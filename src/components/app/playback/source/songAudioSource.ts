@@ -4,12 +4,15 @@ import { ensureLocalSongCoverAsset, getAudioFromLocalSong, getFileFromLocalSong 
 import { getNavidromeConfig, navidromeApi } from '../../../../services/navidromeService';
 import { loadOnlineSongAudioSource, type LoadOnlineAudioSourceOptions } from '../../../../services/onlinePlayback';
 import { getPlaybackRepresentationForRevision } from '../../../../services/playbackRecovery/representationRegistry';
+import { toPlayableAudioAddress } from '../../../../services/playbackRecovery/nativeAudioProxy';
 import { buildLocalSourceRevision, buildNavidromeSourceRevision } from '../../../../services/playbackRecovery/sourceRevision';
+import { onlineFailureOf } from '../../../../services/onlineMusic/failure/onlineFailureCase';
 import type { PrefetchedSongData } from '../../../../services/prefetchService';
 import type { LocalSong, SongResult } from '../../../../types';
 import type { NavidromeConfig, NavidromeSong, SubsonicSong } from '../../../../types/navidrome';
 import type { AudioQualityPreference } from '../../../../types/onlineMusic';
 import {
+    getOnlineProviderIdForSong,
     getPlaybackSongKey,
     isLocalPlaybackSong,
     isNavidromePlaybackSong,
@@ -131,6 +134,11 @@ export const loadNavidromeSongAudio = (config: NavidromeConfig, navidromeSong: N
     };
 };
 
+// How many addresses a play asks for before it gives up: the last one asked for is the one handed
+// back where it could not be played either, so the caller's own chain (another source, another
+// level) is what a refusal costs — never the same address twice.
+const MAX_PLAYABLE_ADDRESS_ATTEMPTS = 3;
+
 /**
  * An online song: what `loadOnlineSongAudioSource` answers, and with an address the moment it was
  * fetched. `fetchedAt` is the time of the prefetch when the prefetched address is the one answered,
@@ -144,10 +152,34 @@ export const loadOnlineSongAudio = async (
     prefetched: PrefetchedSongData | null = null,
     options: LoadOnlineAudioSourceOptions = {},
 ) => {
-    const result = await loadOnlineSongAudioSource(song, audioQuality, prefetched, options);
-    if (result.kind !== 'ok') return result;
-    const fetchedAt = result.blobUrl
-        ? null
-        : prefetched?.audioUrl === result.audioSrc ? prefetched.audioUrlFetchedAt : Date.now();
-    return { ...result, fetchedAt };
+    let result = await loadOnlineSongAudioSource(song, audioQuality, prefetched, options);
+    // The address a source hands out is not always one the page may load: a plain-http address is
+    // refused by WebKit as mixed content in the container (capacitor://localhost is a secure
+    // context), which is why every such song failed with a media error while the same address
+    // played elsewhere. Each address gets turned into something playable here (its bytes through
+    // the native bridge, played from a blob) and an address that cannot be turned is remembered
+    // as refused, so the next ask returns another source's, or another level's, address instead of
+    // handing the same dead link back to the play.
+    for (let attempt = 0; result.kind === 'ok' && attempt < MAX_PLAYABLE_ADDRESS_ATTEMPTS; attempt += 1) {
+        const playable = await toPlayableAudioAddress(result.audioSrc);
+        if (playable) {
+            const fetchedAt = playable.blobUrl
+                ? null
+                : prefetched?.audioUrl === result.audioSrc ? prefetched.audioUrlFetchedAt : Date.now();
+            return { ...result, audioSrc: playable.url, blobUrl: playable.blobUrl ?? result.blobUrl, fetchedAt };
+        }
+        console.warn(`[OnlinePlayback] "${song.name}": ${result.audioSrc} cannot be played here; asking for another address`);
+        result = await loadOnlineSongAudioSource(song, audioQuality, null, { ...options, bypassMediaCache: true });
+    }
+    if (result.kind === 'ok') {
+        // Every address the chain had was refused: the play has nothing it may load.
+        return {
+            kind: 'unavailable' as const,
+            failure: onlineFailureOf(
+                { operation: 'audio', providerId: getOnlineProviderIdForSong(song) ?? undefined },
+                { detail: { case: 'no-audio' } },
+            ),
+        };
+    }
+    return result;
 };

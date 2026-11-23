@@ -7,6 +7,7 @@ import type { AudioQualityPreference, OnlineProviderId } from '../../../types/on
 import type { SongResult, UnifiedSong } from '../../../types';
 import { getOnlineProviderIdForSong } from '../../../utils/appPlaybackGuards';
 import { setStatusMessage } from '../../../stores/useStatusMessageStore';
+import { isAudioSourceRefused } from '../../playbackRecovery/nativeAudioProxy';
 import i18n from '../../../i18n/config';
 import { clearLxVersionGateReports, createLxSourceHost, lxVersionGateReport, type LxSourceHost } from './lxSourceSandbox';
 import { enabledLxSources, useLxSourceStore } from './lxSourceStore';
@@ -242,6 +243,12 @@ export const resolveLxSourceUrl = async (
             if (!tried.includes(meta.name)) tried.push(meta.name);
             try {
                 const url = await host.getMusicUrl(platform, musicInfo, level);
+                if (url && isAudioSourceRefused(url)) {
+                    // This very address already failed to play in this session: the source is not
+                    // asked again for it, and the next source (or level) is tried instead.
+                    useLxSourceStore.getState().noteResult(meta.id, { ok: false, error: 'The address it gave could not be played' });
+                    continue;
+                }
                 if (url) {
                     useLxSourceStore.getState().noteResult(meta.id, { ok: true });
                     rememberPreferred(song, meta.id);

@@ -16,6 +16,7 @@ import { getSongResourceCacheKey } from './onlineMusic/resourceKeys';
 import { deleteCachedSongAudio, getCachedSongAudioBlob, getCachedSongReplayGain, getSongCacheWithLegacyMigration } from './onlineMusic/resourceCache';
 import { measureSongAudio, notTheSongWhy } from './wholeSongCheck';
 import { isCachedSongAudioDistrusted } from './playbackRecovery/mediaCacheGuard';
+import { isAudioSourceRefused } from './playbackRecovery/nativeAudioProxy';
 import { toPlayableAudioUrl } from '../utils/appPlaybackHelpers';
 import { getOnlineProviderIdForSong } from '../utils/appPlaybackGuards';
 import { getProviderSongMetadata } from './onlineMusic/songMetadata';
@@ -67,7 +68,9 @@ const askLxSources = async (
 ): Promise<{ kind: 'ok'; audioSrc: string; replayGain?: ReplayGainInfo; preview: boolean } | null> => {
     try {
         const url = await resolveLxSourceUrl(song, audioQuality);
-        if (!url) return null;
+        // A source that answers an address the play already failed on is no answer at all: the
+        // caller falls through to the platform (or to the next round, which asks another level).
+        if (!url || isAudioSourceRefused(url)) return null;
         const replayGain = applyOnlineAudioSourceMetadata(song, undefined).replayGain;
         updatePrefetchedAudioUrl(song, url, audioQuality, replayGain);
         return { kind: 'ok' as const, audioSrc: url, replayGain, preview: false };
@@ -103,7 +106,7 @@ const switchToOtherLxSource = async (
     } catch (error) {
         console.warn('[OnlinePlayback] The switch to another source failed', error);
     }
-    if (!answer) {
+    if (!answer || isAudioSourceRefused(answer.url)) {
         setStatusMessage({
             type: 'error',
             text: i18n.t('lxSource.autoSwitchFailed'),
@@ -204,7 +207,10 @@ export async function loadOnlineSongAudioSource(
         if (lxUrl) return lxUrl;
     }
 
-    if (prefetched?.audioUrl && prefetched.audioUrl !== 'CACHED_IN_DB' && isUrlValid(prefetched.audioUrlFetchedAt)) {
+    if (prefetched?.audioUrl && prefetched.audioUrl !== 'CACHED_IN_DB' && isUrlValid(prefetched.audioUrlFetchedAt)
+        // An address the play already found unplayable is not handed out again: the prefetch is a
+        // hint, and a stale hint is what made the play retry one dead link over and over.
+        && !isAudioSourceRefused(prefetched.audioUrl)) {
         return {
             kind: 'ok',
             audioSrc: prefetched.audioUrl,
@@ -250,7 +256,10 @@ export async function loadOnlineSongAudioSource(
         } catch (error) {
             thrown = error ?? new Error('The audio source request failed');
         }
-        const url = thrown === undefined ? toPlayableAudioUrl(source?.url) : null;
+        const answered = thrown === undefined ? toPlayableAudioUrl(source?.url) : null;
+        // An address already found unplayable in this session counts as no address: the platform is
+        // asked once, and what it hands back is then another level or another source's copy.
+        const url = answered && !isAudioSourceRefused(answered) ? answered : null;
         if (url) {
             const replayGain = applyOnlineAudioSourceMetadata(song, source?.replayGain).replayGain;
             updatePrefetchedAudioUrl(song, url, audioQuality, replayGain);

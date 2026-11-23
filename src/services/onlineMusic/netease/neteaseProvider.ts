@@ -20,6 +20,7 @@ import { getPlaybackSourceRef } from '../../../utils/appPlaybackGuards';
 import { toFiniteNumber } from '../../../utils/replayGain';
 import { createProviderSongMetadata } from '../../../utils/songMetadata';
 import { NeteaseLoginHttpError, getNeteaseRemoteApiBase, httpErrorStatusOf, neteaseApi, resolveNeteaseSongAvailability } from './netease';
+import { canUseNativeHttp } from './inapp/http';
 import i18n from '../../../i18n/config';
 import { readProviderSessionValue, removeProviderSessionValue, writeProviderSessionValue } from '../providerStorage';
 import { readNeteaseOldAccountCache, removeNeteaseOldAccountCache } from './neteaseOldAccountCache';
@@ -216,6 +217,38 @@ const throwIfLoginCheckRefused = (response: any, route: string): void => {
 const extractCloudLyricText = (response: any): string => (
     response?.lrc || response?.data?.lrc || response?.lyric || response?.data?.lyric || ''
 );
+
+// 手机上问「谁登录着」最多等这么久：两条直连请求都卡住时到此为止，按游客收场。
+const SIGN_IN_CHECK_BUDGET_MS = 15_000;
+
+// 问网易云谁登录着：先 login/status，再 user/account，两边是同一个人才算登录。手机上的上限在
+// auth.getLoginStatus 里套着这一段（同样两条请求，桌面那边没有上限）。
+const askNeteaseWhoIsSignedIn = async (): Promise<ProviderUser | null> => {
+    const loginResponse = await neteaseApi.getLoginStatus();
+    throwIfLoginCheckRefused(loginResponse, 'login/status');
+    const loginProfile = loginResponse?.data?.profile;
+    const loginCode = Number(loginResponse?.code ?? loginResponse?.data?.code);
+    if (!loginProfile || [301, 401, 403].includes(loginCode)) {
+        noteLoginStatusCheck(diagnosticLine`login/status code=${loginCode} profile=${yesNo(Boolean(loginProfile))}`);
+        return null;
+    }
+
+    const accountResponse = await neteaseApi.getUserAccount();
+    throwIfLoginCheckRefused(accountResponse, 'user/account');
+    const accountCode = Number(accountResponse?.code ?? accountResponse?.data?.code);
+    const accountProfile = accountResponse?.profile;
+    const accountId = accountResponse?.account?.id ?? accountProfile?.userId;
+    const loginId = loginProfile?.userId ?? loginProfile?.id;
+    if (!accountProfile || [301, 401, 403].includes(accountCode) || !accountId || !loginId || String(accountId) !== String(loginId)) {
+        noteLoginStatusCheck(diagnosticLine`user/account code=${accountCode} profile=${yesNo(Boolean(accountProfile))} same-user=${yesNo(Boolean(accountId && loginId && String(accountId) === String(loginId)))}`);
+        return null;
+    }
+
+    // 这里不写 cookie：登录状态的回答不带 cookie（上游 login_status 的回答正文里没有），真带了也只会是
+    // 那一次请求的 Set-Cookie，可能没有 MUSIC_U，会盖掉扫码时存下的登录。cookie 只在扫码确认时写（checkLogin）。
+    noteLoginStatusCheck(diagnosticLine`signed in (login/status code=${loginCode}, user/account code=${accountCode})`);
+    return normalizeUser({ ...loginProfile, ...accountProfile });
+};
 
 const neteaseChorusRangesCache = new Map<string, Promise<Array<{ startTime: number; endTime: number }>>>();
 
@@ -757,30 +790,25 @@ export const neteaseProvider: OnlineMusicProvider = {
         localService: neteaseLocalService,
         async getLoginStatus() {
             cookieAskedWith = readProviderSessionValue('netease', 'cookie', ['netease_cookie']);
-            const loginResponse = await neteaseApi.getLoginStatus();
-            throwIfLoginCheckRefused(loginResponse, 'login/status');
-            const loginProfile = loginResponse?.data?.profile;
-            const loginCode = Number(loginResponse?.code ?? loginResponse?.data?.code);
-            if (!loginProfile || [301, 401, 403].includes(loginCode)) {
-                noteLoginStatusCheck(diagnosticLine`login/status code=${loginCode} profile=${yesNo(Boolean(loginProfile))}`);
+            // 手机上这条路是两条连着发的直连请求：没登录时网易云很快回答，但网络卡住时一次请求能拖到十几秒，
+            // 两条叠起来就是 accountRead 那边的 60 秒。所以手机给整段问话一个上限，超时按「没有人登录」收场
+            // （等于游客态），不再让首页的账号读取一直挂着。桌面和填了后端地址的构建没有这个上限。
+            const check = askNeteaseWhoIsSignedIn();
+            if (!(await canUseNativeHttp())) return check;
+            // 超时之后原来的请求还会自己走完：它的失败在这里就地吃掉，否则会变成一条 unhandled rejection。
+            check.catch(() => {});
+            const answer = await Promise.race([
+                check.then(user => ({ user, timedOut: false as const })),
+                new Promise<{ user: null; timedOut: true }>(resolve => {
+                    setTimeout(() => resolve({ user: null, timedOut: true }), SIGN_IN_CHECK_BUDGET_MS);
+                }),
+            ]);
+            if (answer.timedOut) {
+                noteLoginStatusCheck(diagnosticLine`no answer in ${SIGN_IN_CHECK_BUDGET_MS / 1000} s, nobody is taken to be signed in`);
+                console.warn(`[Account] netease: who is signed in did not answer in ${SIGN_IN_CHECK_BUDGET_MS / 1000} s, carrying on as a guest`);
                 return null;
             }
-
-            const accountResponse = await neteaseApi.getUserAccount();
-            throwIfLoginCheckRefused(accountResponse, 'user/account');
-            const accountCode = Number(accountResponse?.code ?? accountResponse?.data?.code);
-            const accountProfile = accountResponse?.profile;
-            const accountId = accountResponse?.account?.id ?? accountProfile?.userId;
-            const loginId = loginProfile?.userId ?? loginProfile?.id;
-            if (!accountProfile || [301, 401, 403].includes(accountCode) || !accountId || !loginId || String(accountId) !== String(loginId)) {
-                noteLoginStatusCheck(diagnosticLine`user/account code=${accountCode} profile=${yesNo(Boolean(accountProfile))} same-user=${yesNo(Boolean(accountId && loginId && String(accountId) === String(loginId)))}`);
-                return null;
-            }
-
-            // 这里不写 cookie：登录状态的回答不带 cookie（上游 login_status 的回答正文里没有），真带了也只会是
-            // 那一次请求的 Set-Cookie，可能没有 MUSIC_U，会盖掉扫码时存下的登录。cookie 只在扫码确认时写（checkLogin）。
-            noteLoginStatusCheck(diagnosticLine`signed in (login/status code=${loginCode}, user/account code=${accountCode})`);
-            return normalizeUser({ ...loginProfile, ...accountProfile });
+            return answer.user;
         },
         // The request to NetEase takes the cookie as it is when it is made (`neteaseApi.logout`),
         // and the cookie goes at once, before the first wait and whatever NetEase answers: what
